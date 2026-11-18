@@ -19,6 +19,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define IDENTITY_SDK_TOKEN_LEN 48
 
 // XXXXXX = last 3 WiFi STA MAC octets (the P4's eFuse MAC — see identity.c).
@@ -62,3 +66,7 @@ void identity_note_paired_sdk_token(void);
 // that token's hint, or "none". False when no token was noted, as for a
 // gadget paired by older firmware.
 bool identity_sdk_token_changed_since_pairing(char *paired_hint, size_t cap);
+
+#ifdef __cplusplus
+}
+#endif

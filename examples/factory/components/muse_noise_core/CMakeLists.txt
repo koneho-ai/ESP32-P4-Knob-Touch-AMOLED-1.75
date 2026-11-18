@@ -14,15 +14,17 @@
 
 # Vendored from the Muse gadget SDK (see examples/factory/VENDORED.md):
 # the Noise_XX_25519_AESGCM_SHA256 session core. The factory build uses only
-# the PSA backend (PsaCryptoBackend.cpp, via muse_chat_session.cpp); the
-# mbedTLS backend is compiled too, as the SDK ships it, so the component stays
-# whole — if it ever fails on a new IDF, drop MbedtlsCryptoBackend.cpp from
-# SRCS here (nothing in the factory firmware references it).
+# the PSA backend (PsaCryptoBackend.cpp, via muse_chat_session.cpp).
+#
+# MbedtlsCryptoBackend.cpp is NOT compiled: it includes
+# <mbedtls/ctr_drbg.h>, which Mbed TLS 4.x (ESP-IDF v6.1) removed — the
+# DRBG is PSA-only there. The file is kept in the tree, uncompiled, so the
+# vendored component stays whole; nothing in the factory firmware references
+# it, and the PSA backend provides the same CryptoBackend interface.
 idf_component_register(
     SRCS
         "src/ClientSession.cpp"
         "src/InitiatorHandshake.cpp"
-        "src/MbedtlsCryptoBackend.cpp"
         "src/PsaCryptoBackend.cpp"
         "src/ServiceCodec.cpp"
         "src/Status.cpp"

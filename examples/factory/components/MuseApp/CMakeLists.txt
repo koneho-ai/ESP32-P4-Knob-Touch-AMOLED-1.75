@@ -19,6 +19,8 @@ idf_component_register(
         app_update
         board_app
         cjson
+        esp_app_format
+        esp_audio_codec
         esp_event
         esp_netif
         esp_timer

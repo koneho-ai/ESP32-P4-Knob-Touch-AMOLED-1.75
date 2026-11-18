@@ -70,6 +70,12 @@
 
 extern "C" {
 #include "cJSON.h"
+/* Factory change (not in the SDK): our minimp3 symbols are renamed — the
+ * factory firmware also links esp_audio_codec, whose prebuilt MP3 decoder
+ * embeds the same minimp3, so unrenamed definitions collide at link time.
+ * minimp3.c applies the same defines; the types are unaffected. */
+#define mp3dec_init muse_mp3dec_init
+#define mp3dec_decode_frame muse_mp3dec_decode_frame
 #include "minimp3.h"
 #include "muse_account_api.h"
 #include "muse_link.h"

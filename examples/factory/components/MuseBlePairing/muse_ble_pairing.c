@@ -1145,8 +1145,8 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     }
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-        if (param->adv_data_raw_set.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(TAG, "adv data set failed: %d", param->adv_data_raw_set.status);
+        if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGE(TAG, "adv data set failed: %d", param->adv_data_raw_cmpl.status);
             if (s_mutex) {
                 xSemaphoreTake(s_mutex, portMAX_DELAY);
                 s_adv_config_pending = false;
@@ -1176,8 +1176,8 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
             enabled = s_advertising_enabled && !s_quiet;
             xSemaphoreGive(s_mutex);
         }
-        if (param->scan_rsp_data_raw_set.status != ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGE(TAG, "scan rsp data set failed: %d", param->scan_rsp_data_raw_set.status);
+        if (param->scan_rsp_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGE(TAG, "scan rsp data set failed: %d", param->scan_rsp_data_raw_cmpl.status);
             break;
         }
         if (!enabled) {

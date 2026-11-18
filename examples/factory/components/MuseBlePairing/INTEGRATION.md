@@ -77,9 +77,16 @@ CONFIG_BT_CLASSIC_ENABLED=y
 CONFIG_BT_A2DP_ENABLE=y
 # BLE on alongside Classic: the Muse pairing GATT server (MuseBlePairing).
 # The ESP32 coprocessor is the dual-mode controller over esp-extconn; the
-# host-side BLE enable below is the only Bluetooth config change needed.
+# host-side BLE enables below are the only Bluetooth config changes needed.
 CONFIG_BT_BLE_ENABLED=y
 CONFIG_BT_GATTS_ENABLE=y
+# The coprocessor is BLE 4.2, and the pairing server uses the legacy 4.2
+# GAP advertising API (esp_ble_gap_start_advertising,
+# esp_ble_gap_config_adv_data_raw, ...). IDF defaults to BLE 5.0 features,
+# which compiles those 4.2 functions out of Bluedroid — without these two
+# lines the link fails on the four GAP functions (seen 2026-11-18).
+CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+CONFIG_BT_BLE_42_ADV_EN=y
 CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
 ```
 
@@ -454,7 +461,12 @@ its stack; the contract is:
    surface as of IDF v6.1; the four uncertain call sites (adv params,
    `config_adv_data_raw`, `set_local_mtu`, `set_device_name`) were
    verified against the installed ESP-IDF v6.1.1 headers at integration
-   time. Remaining risk is runtime behavior, not signatures.
+   time. One rename the header check missed surfaced in the first
+   integrated build (2026-11-18): the GAP callback union members are
+   `adv_data_raw_cmpl` / `scan_rsp_data_raw_cmpl` in v6.1, not
+   `adv_data_raw_set` / `scan_rsp_data_raw_set` (the event enum names
+   are unchanged). Fixed in `muse_ble_pairing.c`. Remaining risk is
+   runtime behavior, not signatures.
 5. **`mbedtls/private/gcm.h` under IDF v6.1 (verified).** In mbedtls
    4.1.1 (IDF v6.1) the header lives under
    `tf-psa-crypto/drivers/builtin/include/mbedtls/private/gcm.h`, and

@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "muse_chat_priv.h"
 #include "muse_credentials.h"
 #include "muse_provisioning.h"
 
@@ -40,6 +41,12 @@ void MuseClient::stop()
         return;
     }
     muse_hatch_turn_cancel();
+    // muse_hatch_chat_forget() (muse_chat_priv.h) drops the Noise
+    // connection and the cached VM credentials. The SDK keeps it private
+    // because its gadget never disconnects; the factory app stops the
+    // session on hide/unpair, so it needs the explicit disconnect. The
+    // session task itself stays alive (muse_hatch_start() is idempotent)
+    // and reconnects on the next testConnection()/configChanged().
     muse_hatch_chat_forget();
 }
 

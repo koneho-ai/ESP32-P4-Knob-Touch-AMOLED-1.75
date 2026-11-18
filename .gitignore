@@ -45,3 +45,4 @@ sdk-ref/
 
 # Local build logs (kept out of the repo)
 build-*.log
+reconfigure-*.log

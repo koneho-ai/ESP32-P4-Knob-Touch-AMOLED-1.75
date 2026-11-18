@@ -18,6 +18,10 @@
 
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define VM_API_MAX_VMS 8
 #define VM_API_ERR_FAILED -1
 #define VM_API_ERR_AUTH   -2
@@ -86,3 +90,7 @@ void vm_list_free(vm_info_t *vms, int count);
 
 const vm_info_t *vm_find_default(const vm_info_t *vms, int count);
 const vm_info_t *vm_find_by_url(const vm_info_t *vms, int count, const char *url);
+
+#ifdef __cplusplus
+}
+#endif

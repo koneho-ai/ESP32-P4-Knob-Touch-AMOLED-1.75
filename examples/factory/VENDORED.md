@@ -33,17 +33,16 @@ under `include/xplat/noise/core/`, sources under `src/`):
 Changes vs the SDK:
 
 - `CMakeLists.txt` is adapted from the SDK's: same sources plus
-  `MbedtlsCryptoBackend.cpp` and `Status.cpp` (the SDK's CMakeLists lists
-  neither — Status is needed by the transport, MbedtlsCryptoBackend is
-  compiled per the task spec). C++17, `-fno-exceptions -fno-rtti`,
-  `PRIV_REQUIRES mbedtls`.
+  `Status.cpp` (the SDK's CMakeLists lists neither it nor
+  `MbedtlsCryptoBackend.cpp` — Status is needed by the transport).
+  C++17, `-fno-exceptions -fno-rtti`, `PRIV_REQUIRES mbedtls`.
+- `MbedtlsCryptoBackend.cpp` is vendored but **not compiled**: it
+  includes `<mbedtls/ctr_drbg.h>`, which Mbed TLS 4.x (ESP-IDF v6.1)
+  removed (DRBG is PSA-only there), so the first integrated build
+  failed on it (2026-11-18). Nothing references it — the session uses
+  the PSA backend — so it was dropped from `SRCS` and kept in the
+  tree only to keep the vendored component whole.
 - `idf_component.yml` is new (no managed dependencies).
-
-**Compile risk:** `MbedtlsCryptoBackend.cpp` uses
-`MBEDTLS_ALLOW_PRIVATE_ACCESS` plus MbedTLS `ecp` private fields. It is
-compiled but nothing selects it at runtime (the session uses the PSA
-backend); if MbedTLS in ESP-IDF v6.1 moved those fields, drop it from
-`SRCS` — the PSA backend is the only one the session needs.
 
 ### `components/minimp3/` — MP3 decoder
 
@@ -51,6 +50,19 @@ From `sdk-ref/esp32/components/minimp3/`, copied verbatim:
 `include/minimp3.h`, `src/minimp3.c`, `LICENSE`, `README.md`. The
 `CMakeLists.txt` is the SDK's (`-O2 -Wno-unused-function`);
 `idf_component.yml` is new.
+
+**Factory change (not in the SDK): the decoder symbols are renamed.**
+The factory firmware also links Espressif's `esp_audio_codec`, whose
+prebuilt MP3 decoder embeds the same minimp3 implementation — defining
+`mp3dec_init`/`mp3dec_decode_frame` here collided at link time (first
+seen in the integrated build, 2026-11-18). `minimp3.c` defines
+`mp3dec_init`/`mp3dec_decode_frame` as `muse_mp3dec_init` /
+`muse_mp3dec_decode_frame`, and `muse_chat_session.cpp` applies the
+same defines before its `#include "minimp3.h"`. Sharing the codec's
+copy was rejected: its embedded minimp3 version is unverifiable from
+the prebuilt archive, and a struct-layout mismatch would corrupt the
+decode state. A second ~30 KB decoder in 32 MB of flash is cheap
+insurance.
 
 Used by the session core's MP3 self-test (`muse_hatch_mp3_selftest`) and
 by the reply-decode path. In v1 nothing feeds MP3 into the decoder (see
@@ -102,6 +114,20 @@ orchestration, `ble_server.c` / `link_pairing.c` (BLE pairing is a
 separate component, `MuseBlePairing`), `noise_control.cpp` / tunnel,
 `image_fetch`, OTA, Opus, `muse_voice_call` realtime sources,
 `muse_wakeword`.
+
+One deliberate boundary crossing: `MuseClient::stop()` includes
+`muse_chat_priv.h` to call `muse_hatch_chat_forget()` (drop the Noise
+connection + cached VM credentials on app hide / unpair / token
+revocation). The SDK keeps it private because its gadget never
+disconnects; the factory app's lifecycle needs the explicit disconnect.
+The session task itself stays alive across it (`muse_hatch_start()` is
+idempotent) and reconnects on the next `muse_hatch_test()` /
+`muse_hatch_config_changed()`.
+
+One deviation in the otherwise-verbatim `muse_chat_session.cpp`: two
+`#define`s before `#include "minimp3.h"` rename `mp3dec_init` /
+`mp3dec_decode_frame` to `muse_mp3dec_*` — see the `minimp3` section
+above for why.
 
 #### Two behaviors that differ from the plan's description
 
@@ -238,33 +264,62 @@ cache; they leave the device only in the `Authorization` header of
 
 ## Known compile risks (not verifiable without a build)
 
-- **MbedtlsCryptoBackend on IDF v6.1** — uses `MBEDTLS_ALLOW_PRIVATE_ACCESS`
-  and MbedTLS `ecp` private fields; MbedTLS in IDF v6.1 may have moved
-  them. Drop it from `muse_noise_core` SRCS if it fails (unused at
-  runtime).
-- **PSA Crypto backend on IDF v6.1** — the PSA calls used
-  (`psa_import_key`, `psa_aead_encrypt/decrypt`, `psa_raw_key_agreement`,
-  etc.) are stable PSA Crypto API, but the SDK pins IDF v6.0.3 ("other
-  versions unsupported") and this firmware targets v6.1.
-- **C++ standard skew** — the factory project defaults to C++26
-  (esp-boost pinned to C++23); the vendored session/noise sources are
-  built as C++17 via their component CMakeLists. If the C++17 setting
-  does not propagate as expected, the vendored sources may see C++26
-  (or the reverse — a C++26-only construct leaking into them).
-- **`esp_ae_rate_cvt` API** — the resample pattern is copied from
-  XiaozhiApp, but the exact `esp_ae_rate_cvt_process` signature and
-  `esp_ae_sample_t` type are taken from the factory's
-  `esp_audio_effects ^1.3.0`; a version bump could change them.
+**Build status 2026-11-18: GREEN.** The integrated firmware builds and
+links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
+in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
+installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
+0xb77d00 bytes (12,025,088) against a 0xe00000 (14 MiB) app partition —
+18% free; DIRAM 267,346 / 655,360 (40.79%). Items marked RESOLVED were
+settled by the integrated build. Everything below that is not marked
+RESOLVED is a runtime-on-hardware question, not a compile question.
+
+- **MbedtlsCryptoBackend on IDF v6.1 — RESOLVED 2026-11-18.** It failed
+  the first integrated build: `<mbedtls/ctr_drbg.h>` no longer exists
+  in Mbed TLS 4.x (IDF v6.1). Dropped from `muse_noise_core` SRCS;
+  the file stays in the tree uncompiled. The PSA backend is the only
+  one the session uses.
+- **PSA Crypto backend on IDF v6.1 — RESOLVED (compile) 2026-11-18.**
+  `PsaCryptoBackend.cpp` compiled cleanly as part of `muse_noise_core`;
+  runtime behavior on v6.1 is still untested on hardware.
+- **C++ standard skew — RESOLVED (compile) 2026-11-18.** The vendored
+  C++17 sources (`muse_noise_core`, and the C++ parts of the session
+  glue) compiled under the factory's C++26-default project; the
+  `cxx_std_17` setting propagated as expected.
+- **`esp_ae_rate_cvt` API — RESOLVED (compile) 2026-11-18.** The
+  resampler calls compiled; the only failure was the channel/bit-depth
+  constants, which live in `esp_audio_types.h` (`esp_audio_codec`),
+  not in `esp_audio_effects` — MuseApp now includes that header and
+  requires `esp_audio_codec`. (XiaozhiApp gets the constants
+  transitively via its Opus codec headers.)
+- **`esp_app_desc_t` header — RESOLVED 2026-11-18.** In IDF v6.1 the
+  type moved to `esp_app_desc.h`; `esp_app_format.h` still exists but
+  is the bootloader's image-format header and does not declare it.
+  MuseApp includes `esp_app_desc.h` now, matching Settings/Xiaozhi.
 - **LVGL 9.5.x arc/transform APIs** — MuseUi uses the arc widget and
   label APIs the same way XiaozhiUi does; the factory uses
   `esp_lvgl_adapter 0.7.3` vs the SDK's 0.6.4, same major line.
+- **BLE 4.2 GAP advertising API — RESOLVED 2026-11-18.** The first
+  link failed on `esp_ble_gap_start_advertising`,
+  `esp_ble_gap_config_adv_data_raw`, `esp_ble_gap_config_scan_rsp_data_raw`,
+  `esp_ble_gap_stop_advertising`: IDF defaults to BLE 5.0 features,
+  which compiles the legacy 4.2 functions out of Bluedroid
+  (`BLE_42_FEATURE_SUPPORT` false). `sdkconfig.defaults` now sets
+  `CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y` and
+  `CONFIG_BT_BLE_42_ADV_EN=y` (correct for this hardware — the
+  coprocessor is BLE 4.2); 5.0 features stay on, both coexist.
+- **`identity.h` C++ linkage — RESOLVED 2026-11-18.** The header had
+  no `extern "C"` guards, so `MuseApp.cpp` mangled the `identity_*`
+  calls and the link failed. Guards added to `identity.h`, and
+  pre-emptively to the other new `muse_vm` headers (`config_store.h`,
+  `vm_api.h`). The SDK-verbatim headers that lack guards
+  (`muse_account_api.h`, `muse_mem.h`) are only included from C files
+  or inside `extern "C"` blocks, so they are left untouched.
 - **`xTaskCreatePinnedToCoreWithCaps` / `xQueueCreateWithCaps` /
-  `xStreamBufferCreateWithCaps`** — from `freertos/idf_additions.h`;
-  availability in IDF v6.1 is assumed from the SDK's v6.0.3 usage.
-- **`esp_read_mac` component deps** — `identity.c` uses it; if the
-  linker complains, add `esp_system`/`efuse` to `muse_vm`'s
-  `PRIV_REQUIRES`.
-- **cJSON provider** — both `muse_session` and `muse_vm` declare
-  `espressif/cjson ^1.7.19` in their `idf_component.yml`, matching
-  XiaozhiApp's pattern; a version conflict with the factory's other
-  cJSON users would surface at `idf.py` configure time.
+  `xStreamBufferCreateWithCaps` — RESOLVED (compile) 2026-11-18.**
+  `muse_session` (which uses them) compiled on IDF v6.1.1.
+- **`esp_read_mac` component deps — RESOLVED 2026-11-18.** The link
+  succeeded with `muse_vm`'s existing `PRIV_REQUIRES`; no
+  `esp_system`/`efuse` addition was needed.
+- **cJSON provider — RESOLVED 2026-11-18.** Configure succeeded with
+  `espressif/cjson ^1.7.19` declared by `muse_session`, `muse_vm`,
+  `MuseApp`, and `MuseBlePairing` alongside the factory's other users.

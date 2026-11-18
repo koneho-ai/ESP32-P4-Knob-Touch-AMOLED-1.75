@@ -19,6 +19,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Persistent key/value config stored in NVS, namespace "museapp" — the Muse
  * app's own namespace, separate from the SDK's "homehub" (this firmware has
@@ -65,3 +69,7 @@ bool config_get_node_id(char *out, size_t size);
 bool config_setup_complete(void);
 bool config_mark_setup_complete(void);
 bool config_clear_setup_complete(void);
+
+#ifdef __cplusplus
+}
+#endif
