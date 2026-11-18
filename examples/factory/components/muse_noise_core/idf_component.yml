@@ -1,0 +1,2 @@
+version: "0.1.0"
+description: "Noise_XX_25519_AESGCM_SHA256 session core, vendored from the Muse gadget SDK (see examples/factory/VENDORED.md)."

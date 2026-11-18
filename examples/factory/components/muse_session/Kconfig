@@ -1,0 +1,38 @@
+menu "Muse chat session"
+
+    config MUSE_HATCH_COMPACT_BUFFERS
+        bool "Compact session buffers (2 MB PSRAM boards)"
+        default n
+        help
+            Shrink the session's mic/reply/MP3 buffers for boards with
+            only 2 MB of PSRAM. The knob board has 32 MB: leave this off.
+
+    config MUSE_REALTIME_VOICE
+        bool "Live voice calls with Muse (POST /voice/realtime)"
+        default n
+        help
+            Adds realtime voice calls beside voice notes. Phase 4 work:
+            the voice-call sources are NOT vendored, so turning this on
+            will fail the build until they are.
+
+    config MUSE_REALTIME_VOICE_APP_ID
+        string "App id the realtime call connects with"
+        default "hatch-web"
+        depends on MUSE_REALTIME_VOICE
+
+    config MUSE_BOARD_SENSECAP_WATCHER
+        bool
+        default n
+        help
+            Internal: the vendored session sources test this symbol to
+            decide whether to keep the whole reply for later review.
+            Always off on the knob board.
+
+    config MUSE_LATEST_REPLY
+        bool "Keep the latest reply for review"
+        default n
+        help
+            Keeps the whole reply text (32 KB in PSRAM) for later review.
+            The knob UI has no review screen: leave this off.
+
+endmenu

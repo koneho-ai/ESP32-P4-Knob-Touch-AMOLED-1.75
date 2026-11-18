@@ -1,0 +1,10 @@
+description: Muse BLE pairing v5 (Bluedroid GATT server) for the P4 knob factory firmware
+version: 0.1.0
+targets:
+  - esp32p4
+dependencies:
+  idf: ">=6.0"
+  # Same managed cJSON the factory project already uses (XiaozhiApp).
+  # Do NOT switch this to the IDF built-in "json" component: both build
+  # the same cJSON sources and would collide at link time.
+  espressif/cjson: "^1.7.19"

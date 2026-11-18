@@ -105,7 +105,11 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_CLASSIC_ENABLED=y
 CONFIG_BT_A2DP_ENABLE=y
-CONFIG_BT_BLE_ENABLED=n
+# BLE on alongside Classic: the Muse pairing GATT server (MuseBlePairing).
+# The ESP32 coprocessor is the dual-mode controller over esp-extconn; the
+# host-side BLE enable below is the only Bluetooth config change needed.
+CONFIG_BT_BLE_ENABLED=y
+CONFIG_BT_GATTS_ENABLE=y
 CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
 
 # microSD media: long file names in UTF-8 so non-ASCII names survive
@@ -139,3 +143,13 @@ CONFIG_XIAOZHI_INFO_TIMEOUT_MS=8000
 CONFIG_XIAOZHI_SYNC_SYSTEM_TIME_FROM_SERVER=n
 
 CONFIG_ESP_BOARD_DEV_CUSTOM_SUPPORT=y
+
+# Muse voice-assistant app (see components/MuseApp/README.md and VENDORED.md).
+# The SDK token is a build-time setting: set it per build via menuconfig and
+# never commit a real token here (empty = pairing cannot mint device tokens).
+CONFIG_MUSE_APP_ENABLED=y
+CONFIG_MUSE_APP_CAPTURE_MIC_MIX=y
+CONFIG_MUSE_HATCH_COMPACT_BUFFERS=n
+CONFIG_MUSE_REALTIME_VOICE=n
+CONFIG_MUSE_REALTIME_VOICE_APP_ID="hatch-web"
+CONFIG_GADGET_SDK_TOKEN=""

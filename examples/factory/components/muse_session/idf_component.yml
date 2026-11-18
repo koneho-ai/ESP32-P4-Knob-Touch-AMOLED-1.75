@@ -1,0 +1,5 @@
+version: "0.1.0"
+description: "Muse chat session core, vendored from the Muse gadget SDK (see examples/factory/VENDORED.md)."
+dependencies:
+  espressif/cjson:
+    version: "^1.7.19"

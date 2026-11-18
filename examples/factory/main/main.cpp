@@ -11,6 +11,7 @@
 #endif
 #define ESP_UTILS_LOG_TAG "Main"
 #include "esp_lib_utils.h"
+#include "sdkconfig.h"
 
 #include "esp_ota_ops.h"
 #include "esp_event.h"
@@ -40,6 +41,9 @@
 #include "Reader.hpp"
 #include "Motion.hpp"
 #include "XiaozhiApp.hpp"
+#if CONFIG_MUSE_APP_ENABLED
+#include "MuseApp.hpp"
+#endif
 #include "UsbScreen.hpp"
 #include "esp_brookesia_app_calculator.hpp"
 #include "esp_heap_caps.h"
@@ -198,6 +202,10 @@ extern "C" void app_main(void)
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(motion_app), "Start Motion failed");
         auto xiaozhi_app = esp_brookesia::apps::XiaozhiApp::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(xiaozhi_app), "Start Xiaozhi failed");
+#if CONFIG_MUSE_APP_ENABLED
+        auto muse_app = esp_brookesia::apps::MuseApp::requestInstance();
+        ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(muse_app), "Start Muse failed");
+#endif
         auto usb_screen_app = esp_brookesia::apps::UsbScreen::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(usb_screen_app), "Start USB Screen failed");
         auto app6 = esp_brookesia::apps::Settings::requestInstance();

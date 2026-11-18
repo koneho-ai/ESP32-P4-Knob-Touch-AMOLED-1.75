@@ -1,0 +1,14 @@
+menu "Muse VM account"
+
+    config GADGET_SDK_TOKEN
+        string "Maker SDK token (mgst_...)"
+        default ""
+        help
+            The maker's SDK token from gadgets.muse.ai (Account > SDK
+            tokens). It is sent with device-token mint and refresh, and
+            Muse records it at pairing time. It is NOT a device credential
+            on its own: pairing still needs the user's Muse account.
+            Leave empty here and set it per build directory (menuconfig)
+            or over the serial console — never commit a real token.
+
+endmenu

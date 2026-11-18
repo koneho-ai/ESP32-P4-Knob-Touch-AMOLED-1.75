@@ -1,0 +1,2 @@
+version: "0.1.0"
+description: "minimp3 (CC0) MP3 decoder, vendored from the Muse gadget SDK (see examples/factory/VENDORED.md)."

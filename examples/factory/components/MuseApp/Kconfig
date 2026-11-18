@@ -1,0 +1,30 @@
+menu "Muse Application"
+
+    config MUSE_APP_ENABLED
+        bool "Enable the Muse voice-assistant app"
+        default y
+        help
+            Installs the Muse app (tap-to-talk voice assistant) on the
+            home screen. Disable to leave the factory firmware exactly as
+            it was.
+
+    choice MUSE_APP_CAPTURE_MIC
+        prompt "Microphone capture source"
+        default MUSE_APP_CAPTURE_MIC_MIX
+        help
+            Which of the two ES7210 microphones feeds the voice session.
+            Mix averages both (the factory default); the single-mic
+            options exist for hardware bring-up, in case the mic channels
+            turn out swapped or one is noisier than the other.
+
+        config MUSE_APP_CAPTURE_MIC_MIX
+            bool "Both microphones mixed"
+
+        config MUSE_APP_CAPTURE_MIC_1
+            bool "Microphone 1 only (TDM slot 0)"
+
+        config MUSE_APP_CAPTURE_MIC_2
+            bool "Microphone 2 only (TDM slot 1)"
+    endchoice
+
+endmenu

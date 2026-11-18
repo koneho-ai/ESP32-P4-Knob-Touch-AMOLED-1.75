@@ -1,0 +1,259 @@
+/*
+ * SPDX-FileCopyrightText: 2026 koneho-ai
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#pragma once
+
+#include <atomic>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "esp_ae_rate_cvt.h"
+#include "esp_event.h"
+#include "audio_service.h"
+#include "muse_ble_pairing.h"
+#include "MuseClient.hpp"
+#include "MuseUi.hpp"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "lvgl.h"
+#include "systems/phone/esp_brookesia_phone_app.hpp"
+
+namespace esp_brookesia::apps {
+
+/**
+ * Muse voice-assistant app for the P4 knob board, modeled on XiaozhiApp.
+ *
+ * Turn-based push-to-talk over the vendored Muse chat session (muse_session):
+ * tap to talk, tap again to send; the reply shows as text at reading pace
+ * (v1 has no spoken replies — see MuseClient). No wake word in v1.
+ *
+ * Lifecycle: the session starts lazily on the first AppVisible (the app
+ * costs nothing until opened), disconnects on AppHidden, and releases the
+ * codec; returning re-prepares. Only 3 apps run at once, so a 4th launch
+ * closes us — the session dies cleanly via AppHidden.
+ *
+ * UNTESTED ON HARDWARE — no board exists yet; compile verification only.
+ */
+class MuseApp: public systems::phone::App {
+public:
+    static MuseApp *requestInstance(bool use_status_bar = false, bool use_navigation_bar = false);
+    ~MuseApp();
+
+protected:
+    MuseApp(bool use_status_bar, bool use_navigation_bar);
+
+    bool run() override;
+    bool back() override;
+    bool close() override;
+    bool init() override;
+    bool deinit() override;
+    bool pause() override;
+    bool resume() override;
+
+private:
+    enum class State : uint8_t {
+        NotProvisioned, // No device tokens: pair in the Muse app
+        NetworkRequired,
+        Preparing,
+        Connecting,
+        Ready,
+        Listening,
+        Thinking,
+        Speaking,
+        Error,
+    };
+
+    enum class ControlEventType : uint8_t {
+        AppVisible,
+        AppHidden,
+        NetworkChanged,
+        ActionPressed,
+        TurnHeard,
+        TurnReply,
+        TurnDone,
+        TurnError,
+        TurnSent,
+        PlaybackDrained,
+        AudioPreempted,
+        AudioError,
+        TokenRefreshed,
+        TokenRevoked,
+        TokenRefreshFailed,
+        BleConfirmRequired,
+        BleStateChanged,
+        Shutdown,
+    };
+
+    struct ControlEvent {
+        ControlEventType type = ControlEventType::NetworkChanged;
+        char text[512] = {};
+        char detail[128] = {};
+        bool flag = false;
+        uint32_t value = 0;  // BleConfirmRequired: session generation;
+                             // BleStateChanged: muse_ble_pairing_state_t
+    };
+
+    static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
+    static constexpr int INPUT_TASK_STACK_SIZE = 8 * 1024;
+    static constexpr int PLAYBACK_TASK_STACK_SIZE = 16 * 1024;
+    static constexpr int REFRESH_TASK_STACK_SIZE = 8 * 1024;
+
+    static MuseApp *_instance;
+
+    lv_obj_t *_page_root = nullptr;
+    lv_timer_t *_ui_timer = nullptr;
+    MuseUi *_ui = nullptr;
+    MuseClient *_client = nullptr;
+
+    SemaphoreHandle_t _state_mutex = nullptr;
+    SemaphoreHandle_t _lifecycle_mutex = nullptr;
+    SemaphoreHandle_t _control_exited = nullptr;
+    QueueHandle_t _control_queue = nullptr;
+
+    TaskHandle_t _control_task = nullptr;
+    TaskHandle_t _input_task = nullptr;
+    TaskHandle_t _playback_task = nullptr;
+    TaskHandle_t _refresh_task = nullptr;
+
+    esp_event_handler_instance_t _ip_event_instance = nullptr;
+
+    std::atomic<State> _state{State::Preparing};
+    std::atomic<bool> _network_ready{false};
+    std::atomic<bool> _visible{false};
+    std::atomic<bool> _shutdown{false};
+    std::atomic<bool> _destroying{false};
+    std::atomic<bool> _deinit_in_progress{false};
+    std::atomic<bool> _deinit_complete{false};
+    std::atomic<uint32_t> _lifecycle_refs{0};
+    std::atomic<uint32_t> _async_post_users{0};
+    std::atomic<bool> _control_running{false};
+    std::atomic<bool> _audio_tasks_running{false};
+    std::atomic<bool> _input_task_running{false};
+    std::atomic<bool> _playback_task_running{false};
+    std::atomic<bool> _capture_enabled{false};
+    std::atomic<bool> _playback_enabled{false};
+    std::atomic<bool> _accept_playback{false};
+    std::atomic<bool> _turn_done{false};
+    std::atomic<bool> _drain_posted{false};
+    std::atomic<bool> _session_started{false};
+    std::atomic<bool> _provisioned{false};
+    std::atomic<bool> _refresh_running{false};
+    std::atomic<bool> _refresh_attempted{false};
+    std::atomic<bool> _token_error{false};
+    // BLE pairing (MuseBlePairing): advertising runs only while the app is
+    // visible and unprovisioned; the confirm prompt is armed from the
+    // control task once its message is set (see handleBleConfirmRequired).
+    std::atomic<bool> _ble_inited{false};
+    std::atomic<bool> _ble_advertising{false};
+    std::atomic<bool> _confirm_pending{false};
+    std::atomic<uint32_t> _confirm_generation{0};
+    std::atomic<muse_ble_pairing_state_t> _ble_state{MUSE_BLE_PAIRING_STATE_IDLE};
+    std::atomic<bool> _toast_pending{false};
+    std::atomic<uint32_t> _input_pcm_peak{0};
+    std::atomic<uint32_t> _output_pcm_peak{0};
+    std::atomic<uint32_t> _played_frames{0};
+    uint32_t _offline_since = 0;    // When "No network" first showed, 0 while online
+    bool _wlan_offered = false;     // Settings opened by itself in this offline spell
+    char _hint[64] = {};
+    TickType_t _turn_done_tick = 0;
+    TickType_t _next_retry_tick = 0;
+
+    audio_client_handle_t _audio_client = nullptr;
+    esp_ae_rate_cvt_handle_t _input_resampler = nullptr;
+    esp_ae_rate_cvt_handle_t _output_resampler = nullptr;
+    uint32_t _input_resampler_max_samples = 0;
+    uint32_t _output_resampler_max_samples = 0;
+
+    char _chat_role[16] = {};
+    char _chat_text[512] = {};
+    char _error_detail[128] = {};
+    char _toast[64] = {};  // Applied by refreshUi (LVGL task); see showToastSoon
+
+    void createUi();
+    void destroyUi();
+    void refreshUi();
+    void setState(State state);
+    void setError(const char *detail);
+    void setChatMessage(const char *role, const char *text);
+    void clearConversationUi();
+    // Queues a toast for refreshUi: MuseUi::showToast touches LVGL objects
+    // and must only run on the LVGL task, never from the control task.
+    void showToastSoon(const char *text);
+    bool canPrepare() const;
+
+    bool isNetworkReady() const;
+    void updateNetworkState();
+
+    bool postControlEvent(const ControlEvent &event);
+    void controlLoop();
+    void controlTick(uint32_t tick);
+    void pollSessionStatus();
+    void pollProvisioning();
+    void pollIncoming();
+    void handleControlEvent(const ControlEvent &event);
+    void handleAppVisible();
+    void handleAppHidden(bool release_audio);
+    void postAppHidden();
+    void startTokenRefresh();
+
+    // ---- BLE pairing (MuseBlePairing; see its INTEGRATION.md) ----
+    // initBlePairing runs once, on first AppVisible after the session
+    // started (identity needs muse_vm_init). Advertising runs only while
+    // visible and unprovisioned. The provision/scan/device-info/unpair
+    // handlers run on the BLE component's worker tasks (internal-RAM
+    // stacks, so NVS writes are safe there); the confirm/state callbacks
+    // only post control events.
+    void initBlePairing();
+    void startBleAdvertising();
+    void stopBleAdvertising();
+    void handleBleConfirmRequired(uint32_t generation);
+    void handleBleStateChanged(muse_ble_pairing_state_t state);
+    void handleBleProvision(const muse_provision_payload_t *payload);
+    void handleBleWifiScan();
+    void handleBleUnpair();
+    void handleBleGetDeviceInfo();
+    static void bleProvisionCallback(const muse_provision_payload_t *payload);
+    static void bleWifiScanCallback();
+    static void bleUnpairCallback();
+    static void bleGetDeviceInfoCallback();
+    static void bleConfirmRequiredCallback(uint32_t generation);
+    static void bleStateChangedCallback(muse_ble_pairing_state_t state);
+
+    bool ensureAudioReady();
+    void shutdownAudio();
+    void startTurn();
+    void endTurn();
+    void cancelTurn();
+    void closeTurn();
+
+    void inputAudio();
+    void playAudio();
+
+    static const char *stateText(State state);
+    static bool tickReached(TickType_t due_tick, uint32_t timeout_ms);
+    static void controlTaskEntry(void *arg);
+    static void inputTaskEntry(void *arg);
+    static void playbackTaskEntry(void *arg);
+    static void refreshTaskEntry(void *arg);
+    static void ipEventHandler(
+        void *arg,
+        esp_event_base_t event_base,
+        int32_t event_id,
+        void *event_data
+    );
+    static void uiTimerCallback(lv_timer_t *timer);
+    static void uiActionCallback(void *context);
+    static void audioPreemptCallback(audio_client_handle_t client, void *user_ctx);
+    static void knobCallback(int steps, void *user_ctx);
+    static MuseUi::Mode uiMode(State state);
+    const char *hintText(State state);
+    const char *offlineHint();
+    void openWlanSettings();
+};
+
+} // namespace esp_brookesia::apps

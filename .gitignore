@@ -39,3 +39,6 @@ release-dist/
 
 # Generated Board Manager tables are derived from the shared YAML
 **/components/gen_bmgr_codes/
+
+# Local SDK reference clone (read-only; never part of this repo)
+sdk-ref/
