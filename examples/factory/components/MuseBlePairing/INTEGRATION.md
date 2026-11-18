@@ -455,12 +455,13 @@ its stack; the contract is:
    `config_adv_data_raw`, `set_local_mtu`, `set_device_name`) were
    verified against the installed ESP-IDF v6.1.1 headers at integration
    time. Remaining risk is runtime behavior, not signatures.
-5. **`mbedtls/private/gcm.h` under IDF v6.1.** The vendored
-   `link_pairing.c` includes it (as the SDK does on IDF v6.0.3). If v6.1's
-   mbedtls moved or removed that header, switch the include to
-   `mbedtls/gcm.h` + `mbedtls/private_access.h` (the private-access
-   macros are the only thing the file needs from it, for
-   `shared.MBEDTLS_PRIVATE(X)`).
+5. **`mbedtls/private/gcm.h` under IDF v6.1 (verified).** In mbedtls
+   4.1.1 (IDF v6.1) the header lives under
+   `tf-psa-crypto/drivers/builtin/include/mbedtls/private/gcm.h`, and
+   IDF's mbedtls component exposes that include dir — so the vendored
+   `link_pairing.c` include resolves, and it pulls in
+   `mbedtls/private_access.h` defining `MBEDTLS_PRIVATE`. Verified
+   against the installed headers at integration time.
 6. **MTU negotiation.** The component proposes a local MTU of 512. Whether
    the coprocessor controller + Bluedroid honor it, and whether the Muse
    app chunks correctly at whatever MTU results, is unverified. The

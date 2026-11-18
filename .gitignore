@@ -42,3 +42,6 @@ release-dist/
 
 # Local SDK reference clone (read-only; never part of this repo)
 sdk-ref/
+
+# Local build logs (kept out of the repo)
+build-*.log
