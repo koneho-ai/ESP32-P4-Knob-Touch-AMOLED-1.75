@@ -4,7 +4,7 @@
 
 ## What It Does
 
-Starts the 466 × 466 ESP-Brookesia launcher with display, media, wireless, motion, settings, USB Screen and Xiaozhi applications. Media uses a FAT-formatted microSD card as follows:
+Starts the 466 × 466 ESP-Brookesia launcher with display, media, wireless, motion, settings, Muse and Xiaozhi applications. Media uses a FAT-formatted microSD card as follows:
 
 | Folder | App | Files |
 | --- | --- | --- |
@@ -14,13 +14,13 @@ Starts the 466 × 466 ESP-Brookesia launcher with display, media, wireless, moti
 | `books` | Reader | UTF-8, GBK or UTF-16 TXT |
 | `fonts` | Reader | Optional TTF fallback font |
 
-Xiaozhi connects to [xiaozhi.me](https://xiaozhi.me): connect Wi-Fi, then add the first-use six-digit code in the service console. USB Screen and **Settings > Storage** are mutually exclusive; each USB function is active only while its corresponding application is open.
+Xiaozhi connects to [xiaozhi.me](https://xiaozhi.me): connect Wi-Fi, then add the first-use six-digit code in the service console. **Settings > Storage** exports the microSD card as a USB drive; it is active only while the Storage page is open. (The Windows-only USB Screen extended display was removed on the `muse-app` branch to save flash.)
 
 ## Hardware Required
 
 - ESP32-P4-Knob-Touch-AMOLED-1.75 development board
 - A FAT-formatted microSD card for media applications
-- A Wi-Fi network for Xiaozhi and a USB host for USB Screen, when used
+- A Wi-Fi network for Xiaozhi and Muse, when used
 
 ## How to Run
 

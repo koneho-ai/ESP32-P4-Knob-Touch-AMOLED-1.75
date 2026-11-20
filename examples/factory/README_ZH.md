@@ -4,7 +4,7 @@
 
 ## 功能
 
-在 466 × 466 屏幕上启动 ESP-Brookesia 应用启动器，提供显示、媒体、无线、运动、设置、USB Screen 和小智等应用。媒体应用使用 FAT 格式 microSD 卡，目录和文件格式如下：
+在 466 × 466 屏幕上启动 ESP-Brookesia 应用启动器，提供显示、媒体、无线、运动、设置、Muse 和小智等应用。媒体应用使用 FAT 格式 microSD 卡，目录和文件格式如下：
 
 | 文件夹 | 应用 | 文件 |
 | --- | --- | --- |
@@ -14,13 +14,13 @@
 | `books` | 阅读器 | UTF-8、GBK 或 UTF-16 编码 TXT |
 | `fonts` | 阅读器 | 可选 TTF 补充字体 |
 
-小智接入 [xiaozhi.me](https://xiaozhi.me)：连接 Wi-Fi 后，在服务控制台添加首次显示的六位验证码。USB Screen 与 **设置 > Storage** 不能同时使用；只有打开对应应用时，USB 口才启用该功能。
+小智接入 [xiaozhi.me](https://xiaozhi.me)：连接 Wi-Fi 后，在服务控制台添加首次显示的六位验证码。**设置 > Storage** 可将 microSD 卡导出为 USB 驱动器；只有打开 Storage 页面时 USB 口才启用该功能。（仅支持 Windows 的 USB Screen 扩展显示已在 `muse-app` 分支中移除，以节省 Flash 空间。）
 
 ## 硬件需求
 
 - ESP32-P4-Knob-Touch-AMOLED-1.75 开发板
 - 用于媒体应用的 FAT 格式 microSD 卡
-- 使用小智时的 Wi-Fi 网络，以及使用 USB Screen 时的 USB 主机
+- 使用小智和 Muse 时的 Wi-Fi 网络
 
 ## 怎么运行
 

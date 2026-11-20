@@ -17,13 +17,13 @@ extern "C" {
  * connector in the orientation opposite to the USB-serial bridge, so the
  * host only sees this device after the plug is flipped.
  *
- * The port serves one function at a time; starting one while another runs
- * fails with ESP_ERR_INVALID_STATE.
+ * The port exports the microSD card as a mass-storage drive. (It used to
+ * also serve a Windows-only extended screen; that was removed on the
+ * muse-app branch to save flash — see the branch notes in VENDORED.md.)
  */
 typedef enum {
     USB_SERVICE_MODE_OFF,       /*!< Device is detached from the bus */
     USB_SERVICE_MODE_SD_DRIVE,  /*!< microSD card is exposed as a mass-storage drive */
-    USB_SERVICE_MODE_DISPLAY,   /*!< Extended screen for a PC, see usb_display.h */
 } usb_service_mode_t;
 
 typedef enum {
@@ -40,11 +40,6 @@ typedef enum {
  *         their files before the host sees the drive.
  */
 esp_err_t usb_service_start_sd_drive(void);
-
-/**
- * @brief  Attach as the extended screen; used by usb_display_start()
- */
-esp_err_t usb_service_start_display(void);
 
 /**
  * @brief  Detach from the host, and give the microSD card back to applications

@@ -90,12 +90,6 @@ CONFIG_LV_USE_SNAPSHOT=y
 # The Reader draws characters its built-in fonts lack from a TTF on the card
 CONFIG_LV_USE_TINY_TTF=y
 
-# Sound of the USB extended screen: usb_device_uac inside this project's TinyUSB setup, stereo
-# both ways because the codec plays and records in one format
-CONFIG_USB_DEVICE_UAC_AS_PART=y
-CONFIG_UAC_SPEAKER_CHANNEL_NUM=2
-CONFIG_UAC_MIC_CHANNEL_NUM=2
-CONFIG_UAC_SAMPLE_RATE=48000
 CONFIG_LV_BUILD_EXAMPLES=n
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 

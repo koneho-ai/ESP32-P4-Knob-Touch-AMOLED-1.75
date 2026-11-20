@@ -6,10 +6,9 @@
 
 #pragma once
 
-/* Audio class settings come from usb_device_uac, which serves the speaker and microphone of
- * the extended screen; usb_descriptors.c lays its interfaces out next to the others. */
-#include "uac_descriptors.h"
-#include "tusb_config_uac.h"
+/* TinyUSB configuration for the microSD mass-storage drive. The vendor,
+ * HID and audio classes the Windows-only extended screen used were
+ * removed with it on the muse-app branch. */
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,20 +31,9 @@ extern "C" {
 
 #define CFG_TUD_ENDPOINT0_SIZE      64
 
-/* Each mode only lists its own interfaces, so the other class drivers stay idle */
-
 /* microSD drive */
 #define CFG_TUD_MSC                 1
 #define CFG_TUD_MSC_EP_BUFSIZE      (32 * 1024)
-
-/* Extended screen: JPEG frames from the PC driver on a vendor interface, touch on HID. Without
- * FIFOs each callback is one packet, so a frame starts at a packet and its padding is dropped. */
-#define CFG_TUD_VENDOR              1
-#define CFG_TUD_VENDOR_EPSIZE       512
-#define CFG_TUD_VENDOR_RX_BUFSIZE   0
-#define CFG_TUD_VENDOR_TX_BUFSIZE   0
-#define CFG_TUD_HID                 1
-#define CFG_TUD_HID_EP_BUFSIZE      64
 
 #ifdef __cplusplus
 }

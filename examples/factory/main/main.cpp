@@ -44,7 +44,6 @@
 #if CONFIG_MUSE_APP_ENABLED
 #include "MuseApp.hpp"
 #endif
-#include "UsbScreen.hpp"
 #include "esp_brookesia_app_calculator.hpp"
 #include "esp_heap_caps.h"
 #include <algorithm>
@@ -206,8 +205,6 @@ extern "C" void app_main(void)
         auto muse_app = esp_brookesia::apps::MuseApp::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(muse_app), "Start Muse failed");
 #endif
-        auto usb_screen_app = esp_brookesia::apps::UsbScreen::requestInstance();
-        ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(usb_screen_app), "Start USB Screen failed");
         auto app6 = esp_brookesia::apps::Settings::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(app6), "Start Settings failed");
 

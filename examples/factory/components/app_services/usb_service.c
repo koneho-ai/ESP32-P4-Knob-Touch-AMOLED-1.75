@@ -90,20 +90,6 @@ esp_err_t usb_service_start_sd_drive(void)
     return ESP_OK;
 }
 
-esp_err_t usb_service_start_display(void)
-{
-    ESP_RETURN_ON_FALSE(s_mode == USB_SERVICE_MODE_OFF, ESP_ERR_INVALID_STATE, TAG, "USB is busy");
-    // The descriptors follow the mode, so set it before the host enumerates
-    s_mode = USB_SERVICE_MODE_DISPLAY;
-    esp_err_t ret = usb_stack_start();
-    if (ret != ESP_OK) {
-        s_mode = USB_SERVICE_MODE_OFF;
-        return ret;
-    }
-    ESP_LOGI(TAG, "Extended screen attached");
-    return ESP_OK;
-}
-
 esp_err_t usb_service_stop(void)
 {
     if (s_mode == USB_SERVICE_MODE_OFF) {
@@ -111,11 +97,6 @@ esp_err_t usb_service_stop(void)
     }
     if (s_stack_ready) {
         tud_disconnect();
-    }
-    if (s_mode == USB_SERVICE_MODE_DISPLAY) {
-        s_mode = USB_SERVICE_MODE_OFF;
-        ESP_LOGI(TAG, "USB detached");
-        return ESP_OK;
     }
 
     // Wait for an in-flight sector transfer, then stop serving the card.

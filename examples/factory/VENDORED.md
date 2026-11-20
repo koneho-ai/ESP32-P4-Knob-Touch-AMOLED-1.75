@@ -262,14 +262,36 @@ cache; they leave the device only in the `Authorization` header of
 - Power saving: `muse_hatch_set_resting` is never called; the session
   idles with its 10-minute idle-close timer.
 
+## USB Screen removed (2026-11-20)
+
+The factory's USB Screen app (Windows-only extended display — Espressif
+proprietary protocol plus a Windows-only driver) was removed from
+`muse-app` to save flash. Removed: `components/UsbScreen/` (whole
+component), `components/usb_device_uac/` (whole component — its UAC
+served only the screen's speaker/mic), `components/app_services/usb_display.c`
++ `include/usb_display.h`, `components/app_services/usb/usb_descriptors.h`;
+`usb_service` lost `USB_SERVICE_MODE_DISPLAY` +
+`usb_service_start_display()`, `usb_descriptors.c` was rewritten MSC-only
+(fixed MSC PID, no display/HID/audio descriptors), `tusb_config.h`
+dropped the UAC includes and `CFG_TUD_VENDOR`/`CFG_TUD_HID`, `main.cpp`
+no longer installs the app, and the `CONFIG_USB_DEVICE_UAC_*` lines left
+`sdkconfig.defaults`. Kept deliberately: TinyUSB + MSC (the USB-drive
+function — Settings StoragePage only uses SD drive), `esp_driver_jpeg`
+(Gallery + VideoPlayer use it), `esp_driver_ppa` (VideoPlayer).
+
+Build #9 (2026-11-20) after the removal: GREEN, `esp-brookesia.bin`
+11,951,504 bytes (0xb65d90) vs 12,025,088 before — 73,584 bytes (71.9 KiB)
+saved, 19% of the 14 MiB app partition free.
+
 ## Known compile risks (not verifiable without a build)
 
-**Build status 2026-11-18: GREEN.** The integrated firmware builds and
+**Build status 2026-11-20: GREEN.** The integrated firmware builds and
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xb77d00 bytes (12,025,088) against a 0xe00000 (14 MiB) app partition —
-18% free; DIRAM 267,346 / 655,360 (40.79%). Items marked RESOLVED were
+0xb65d90 bytes (11,951,504) against a 0xe00000 (14 MiB) app partition —
+19% free, after the USB Screen removal (was 0xb77d00 / 12,025,088, 18%
+free, at Phases 0-3); DIRAM 267,346 / 655,360 (40.79%) at Phases 0-3. Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 
