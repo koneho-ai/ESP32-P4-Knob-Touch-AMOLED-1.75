@@ -8,13 +8,15 @@ set(PROJ_SRCS_CPP
     "MuseApp.cpp"
     "MuseClient.cpp"
     "MuseUi.cpp"
+    "MuseLink.cpp"
+    "muse_led_status.cpp"
     "muse_wakeword_glue.cpp"
 )
 
 idf_component_register(
     SRCS ${PROJ_SRCS_C} ${PROJ_SRCS_CPP}
     INCLUDE_DIRS ${PROJ_SRC}
-    REQUIRES brookesia_core app_services Settings MuseBlePairing muse_session muse_vm muse_avatar muse_wakeword esp_audio_effects
+    REQUIRES brookesia_core app_services Settings MuseBlePairing muse_session muse_vm muse_avatar muse_link muse_wakeword esp_audio_effects
     PRIV_REQUIRES
         app_fonts
         app_update

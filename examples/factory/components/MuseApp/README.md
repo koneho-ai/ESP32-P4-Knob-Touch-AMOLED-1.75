@@ -129,6 +129,31 @@ other apps' audio is preempted). The detector runs entirely on the
 device; audio leaves only after a detection, as the voice note.
 Tap-to-talk stays primary and works exactly as before.
 
+## Link session
+
+While the app is visible, Link (Phase 4.3) holds a second Noise
+session to the VM — separate from the voice session — so Muse can
+reach the device with commands: `display.draw_url` and
+`display.draw_file` draw an image full-screen over the avatar (a tap,
+a talk or `display.show_animation` brings the avatar back),
+`voice.configure` sets the speaker volume, and `wakeword.disable`
+turns hands-free listening off at once (only someone at the device
+can turn it back on). The VM commands (`device.list_vms` / `set_vm` /
+`reset_vm` / `unpair`) are handled locally by the settings page
+instead, and discover / sensors / camera / `ble.*` / `app.*` /
+`bug.report` answer "unsupported" — the board has no tunnel, sensors,
+camera or BLE command server.
+
+Link follows the app's visibility: it starts with the voice session
+when the app becomes visible and stops on hide. There is no always-on
+connection, and commands only work while the app is on screen. If the
+server unpairs the device remotely, the app unpairs locally the same
+way a revoked token does; if Link's VM credentials are rejected, the
+app refreshes the device token and reconnects Link with fresh
+credentials. See `../VENDORED.md` (the `muse_link` section) for the
+vendored files and the limits (two simultaneous Noise+TLS sessions,
+JPEG peripheral contention with Gallery, no battery in device.health).
+
 ## The avatar
 
 The screen shows the SDK's animated avatar face, not the factory
@@ -164,10 +189,17 @@ MuseApp (this component)
                  UI glue
   MuseClient.cpp Adapter over the vendored session core + credential store
   MuseUi.cpp     LVGL avatar face / ring / meter / captions (SDK full layout)
+                 + downloaded-image overlay (Link display.*)
   muse_wakeword_glue.cpp  Wake-word glue (factory-new): wake task, tap,
                  pre-roll seed handoff, opt-in (see ../VENDORED.md)
+  MuseLink.cpp   Link lifecycle (factory-new): visible-only Noise
+                 session, command dispatch, credential worker
+  muse_led_status.cpp  led_status shim for the Muse backend: Link's
+                 image commands draw through the MuseUi overlay
   assets/        Home-screen icon (112x112 ARGB8888, bunny motif)
 ../muse_avatar   Vendored SDK avatar renderer (muse_pixel.c, happy_anim)
+../muse_link     Vendored SDK Link session (noise_control, image_fetch,
+                 noise_tunnel, link_events, link_probe, stack_monitor)
 ../muse_wakeword Vendored SDK wake-word core + ExecuTorch runner
                  (muse_wakeword_core, ww_runner_espnn, hey_muse.pte)
 ../muse_session  Vendored SDK session core (Noise + HTTPS + dictation)
@@ -202,9 +234,9 @@ duplicate to stereo → `audio_client_write`.
   is turned on (see "Wake word" above). No background listening.
 - **Calls are half-duplex, hands-free only.** No echo cancellation, no
   push-to-talk call (see "Realtime voice calls" above).
-- **No Link control session.** The session core's Link hooks are stubbed;
-  the app uses the own-token path only (fetch VMs from
-  `api.muse.ai`, mint device tokens, Noise session to the VM).
+- **Link is visible-only.** The agent's commands work only while the
+  Muse app is on screen (see "Link session" above). No tunnel, no
+  sensors, no camera, no BLE commands.
 - **No OTA.** Single 14 MB factory partition; updates are a reflash.
 - **No power saving.** `muse_hatch_set_resting` is not called; the
   session idles with its 10-minute idle-close timer.

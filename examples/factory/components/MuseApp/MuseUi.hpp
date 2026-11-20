@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 #include "muse_state.h"   // muse_mode_t, the avatar's animation mode
 
@@ -35,7 +37,11 @@ namespace esp_brookesia::apps {
  * a long press doesn't talk); a long press on the avatar pets it (the SDK's
  * happy reaction, 1.6 s). A long press anywhere else starts a realtime
  * voice call (Phase 4.1) via the hold callback — the SDK's tap/hold split
- * inverted, so tap-to-talk stays the primary path. Deliberate deviations
+ * inverted, so tap-to-talk stays the primary path. A downloaded image
+ * (Link display.*, Phase 4.3) covers the whole screen over the avatar
+ * until a tap, a talk or display.show_animation dismisses it; a tap on
+ * the image stops at SHORT_CLICKED so it never starts a talk.
+ * Deliberate deviations
  * from the SDK: no volume swipe (the knob is the volume control), no
  * speaker/mute button, no settings or latest-reply tile (the Brookesia
  * launcher owns navigation), and one caption box for both the user
@@ -51,7 +57,10 @@ namespace esp_brookesia::apps {
  *
  * All LVGL calls on the LVGL task only, except captionGlyphPx, which the
  * session task calls and which only measures a read-only built-in font
- * (or the app font once preload() has loaded it — it is cached forever).
+ * (or the app font once preload() has loaded it — it is cached forever),
+ * and the image overlay methods, which the Link download task calls and
+ * which serialize on the image mutex (imageHide takes the display lock,
+ * which is recursive, so it is safe from the LVGL task too).
  *
  * UNTESTED ON HARDWARE — no board exists yet; compile verification only.
  */
@@ -78,7 +87,7 @@ public:
     // Safe from any task: it only measures a read-only font.
     static int captionGlyphPx(uint32_t letter, uint32_t next);
 
-    MuseUi() = default;
+    MuseUi();
     ~MuseUi();
 
     MuseUi(const MuseUi &) = delete;
@@ -113,6 +122,21 @@ public:
     void setHint(const char *hint);
     /* Replaces the state name for a moment */
     void showToast(const char *text);
+
+    /* ---- Downloaded image overlay (Phase 4.3, Link display.*) ----
+     * Mirrors the SDK's muse_ui_image_* (muse_ui.c): a full-screen image
+     * over the avatar, drawn in RGB565 bands by the download task and
+     * shown by imageSync on the frame tick. Safe from any task: the
+     * buffer, the dirty area and the view-liveness flag serialize on the
+     * image mutex, and imageHide takes the (recursive) display lock.
+     * imageSize is false while the view is down, so a download that
+     * arrives after close() refuses cleanly instead of drawing into a
+     * deleted view. */
+    bool imageSize(int *w, int *h);
+    int imageBits();
+    bool imageDraw(int x, int y, int w, int h, const uint16_t *pixels);
+    void imageDone();
+    void imageHide();
 
     lv_obj_t *root() const
     {
@@ -154,6 +178,8 @@ private:
     void applyMode();
     void updateTexts();
     void frameTick();
+    void imageSync();
+    void imageHideLocked();   // with the display lock held, or on the LVGL task
     void updateRing(float now);
     void updateMeter();
     void setMeterVisible(bool visible);
@@ -168,11 +194,19 @@ private:
     static void rootEventCallback(lv_event_t *event);
     static void rootHoldCallback(lv_event_t *event);
     static void avatarEventCallback(lv_event_t *event);
+    static void imageEventCallback(lv_event_t *event);
     static void moveAnimCallback(void *var, int32_t t);
 
     lv_obj_t *_root = nullptr;
     lv_obj_t *_ring = nullptr;
     lv_obj_t *_avatar = nullptr;
+    lv_obj_t *_image = nullptr;   // downloaded image overlay, over everything
+    lv_image_dsc_t _image_dsc = {};
+    uint16_t *_image_buf = nullptr;   // 466x466 RGB565 in PSRAM (434,512 bytes)
+    SemaphoreHandle_t _image_mutex = nullptr;
+    lv_area_t _image_area = {};
+    bool _image_dirty = false;
+    bool _view_live = false;   // create() set, destroyView() cleared, under _image_mutex
     lv_obj_t *_meter[kMeterSegs] = {};
     lv_obj_t *_state_label = nullptr;
     lv_obj_t *_caption = nullptr;

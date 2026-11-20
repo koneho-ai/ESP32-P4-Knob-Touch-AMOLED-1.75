@@ -1,0 +1,79 @@
+# Muse Link session (Phase 4.3), vendored from the Muse gadget SDK (see
+# examples/factory/VENDORED.md). Adapted from the SDK's main/Kconfig.projbuild:
+# the factory defines only the symbols the vendored files need, with the
+# P4 Knob's own model id and name. Deliberately NOT defined here:
+# MUSE_ENABLED (would pull muse_state_power() and the SDK's power UI),
+# HOMEHUB_TUNNEL (no tunnel — the VM is not exposed to this device),
+# HOMEHUB_BLE_COMMANDS (no BLE command server), MUSE_WASM_APPS (no app
+# runtime), HOMEHUB_FAST_GCM (no fast-GCM offload), MUSE_WATCHER_CAMERA /
+# MUSE_P4_CSI_CAMERA (no camera), HOMEHUB_SHOW_AGENT_NAME (no GET /identity
+# fetch). CONFIG_MUSE_WAKEWORD_ENABLE comes from the muse_wakeword
+# component (Phase 4.2) and makes Link advertise wakeword.disable.
+# SPDX-License-Identifier: Apache-2.0
+
+menu "Muse Link session"
+    depends on MUSE_APP_ENABLED
+
+    config MUSE_DEVICE_MODEL_ID
+        string "Device model id"
+        default "muse-gadget-p4-knob"
+        help
+            The hardware model this device registers with Muse (model_id in
+            link.register): 1 to 64 lowercase letters, digits and hyphens.
+
+    config MUSE_DEVICE_MODEL_NAME
+        string "Device model name"
+        default "Waveshare ESP32-P4 Knob Touch AMOLED 1.75"
+        help
+            The hardware's name as people know it, sent to Muse as
+            metadata.model_name in link.register: 1 to 128 printable ASCII
+            characters, without " or \.
+
+    config HOMEHUB_DAEMON_REQUESTS
+        bool "Requests to Muse's VM from your own code"
+        default y
+        help
+            Lets firmware code open its own HTTP requests to the VM's
+            daemon on Link's Noise session (noise_ctrl_req_open() and
+            friends in noise_control.h). display.draw_file reads image
+            files from the VM through it.
+
+    config HOMEHUB_DISPLAY_COMMANDS
+        bool "display.draw_url / draw_file / show_animation commands"
+        default y
+        select HOMEHUB_DAEMON_REQUESTS
+        help
+            Set when display.draw_url and display.draw_file can draw an
+            image: the P4 Knob has the full UI, PSRAM for the image and
+            a hardware JPEG decoder.
+
+    config HOMEHUB_LED_BACKEND_MUSE
+        bool "Muse LED backend (the avatar screen)"
+        default y
+        help
+            The display backend for the Muse face: Link draws images
+            through the led_status shim in the MuseApp component, which
+            shows them on the avatar screen.
+
+    config HOMEHUB_VOICE
+        bool "Advertise voice.configure (speaker volume)"
+        default y
+        help
+            Registers the voice.configure command, which sets the
+            speaker volume (0-100, kept across restarts) through the
+            factory audio service. There is no voice.play_url in the
+            SDK: the only voice command is voice.configure.
+
+    config MUSE_LINK_STACK_RESERVE
+        bool "Reserve a 12 KB internal block for the Link task stack"
+        depends on SPIRAM
+        default y
+        help
+            Muse's display and audio leave internal RAM fragmented by
+            the time a session starts, often without a 12 KB block for
+            the Link task's stack. Hold one from boot and hand it over
+            just before the task is created (the SDK guards the same
+            reserve on CONFIG_MUSE_ENABLED; the factory uses this symbol
+            instead — see the note in noise_control.cpp).
+
+endmenu

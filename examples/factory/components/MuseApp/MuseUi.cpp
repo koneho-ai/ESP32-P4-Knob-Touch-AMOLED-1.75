@@ -14,6 +14,7 @@
 #include <math.h>
 
 #include "app_fonts.h"
+#include "board_app.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "lvgl.h"
@@ -330,9 +331,18 @@ int MuseUi::captionGlyphPx(uint32_t letter, uint32_t next)
     return lv_font_get_glyph_width(s_caption_font, letter, next);
 }
 
+MuseUi::MuseUi()
+{
+    _image_mutex = xSemaphoreCreateMutex();
+}
+
 MuseUi::~MuseUi()
 {
     destroy();
+    if (_image_mutex) {
+        vSemaphoreDelete(_image_mutex);
+        _image_mutex = nullptr;
+    }
 }
 
 bool MuseUi::preload()
@@ -484,6 +494,16 @@ bool MuseUi::create(
     lv_label_set_long_mode(_hint_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(_hint_label, _hint);
 
+    // A downloaded image (Link display.*): over everything on the screen,
+    // dismissed by a tap. Created last so it sits on top; hidden until the
+    // first rectangle arrives (imageSync unhides it on the frame tick).
+    _image = lv_image_create(_root);
+    lv_obj_set_size(_image, kScreenPx, kScreenPx);
+    lv_obj_center(_image);
+    lv_obj_add_flag(_image, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(_image, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_image, imageEventCallback, LV_EVENT_SHORT_CLICKED, this);
+
     _mode_valid = false;
     _mode_since_us = esp_timer_get_time();
     _boot_started_us = _mode_since_us;
@@ -493,6 +513,11 @@ bool MuseUi::create(
     _tick = lv_timer_create(tickCallback, kTickMs, this);
     applyMode();
     updateTexts();
+    if (_image_mutex) {
+        xSemaphoreTake(_image_mutex, portMAX_DELAY);
+        _view_live = true;
+        xSemaphoreGive(_image_mutex);
+    }
     return true;
 }
 
@@ -508,12 +533,22 @@ void MuseUi::destroyView()
         _tick = nullptr;
     }
     lv_anim_delete(this, nullptr);   /* stop a shrink/grow mid-flight */
+    // Liveness off first (under the mutex, so a download in flight either
+    // finishes before this or refuses after), then free the image buffer
+    // while the mutex still serializes with the download task.
+    if (_image_mutex) {
+        xSemaphoreTake(_image_mutex, portMAX_DELAY);
+        _view_live = false;
+        xSemaphoreGive(_image_mutex);
+    }
+    imageHideLocked();
     if (_root) {
         lv_obj_delete(_root);
         _root = nullptr;
     }
     _ring = nullptr;
     _avatar = nullptr;
+    _image = nullptr;
     _state_label = nullptr;
     _caption = nullptr;
     _hint_label = nullptr;
@@ -621,6 +656,146 @@ void MuseUi::showToast(const char *text)
     _toast_until = lv_tick_get() + kToastMs;
 }
 
+// ---- Downloaded image overlay (Phase 4.3; SDK muse_ui.c image_*) ----
+
+bool MuseUi::imageSize(int *w, int *h)
+{
+    if (!w || !h || !_image_mutex || !heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+        return false;
+    }
+    xSemaphoreTake(_image_mutex, portMAX_DELAY);
+    bool live = _view_live;
+    xSemaphoreGive(_image_mutex);
+    if (!live) {
+        return false;
+    }
+    *w = kScreenPx;
+    *h = kScreenPx;
+    return true;
+}
+
+int MuseUi::imageBits()
+{
+    return 16;   /* RGB565 colour panel */
+}
+
+bool MuseUi::imageDraw(int x, int y, int w, int h, const uint16_t *pixels)
+{
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > kScreenPx || y + h > kScreenPx ||
+            !pixels || !_image_mutex) {
+        return false;
+    }
+    xSemaphoreTake(_image_mutex, portMAX_DELAY);
+    // Liveness is checked inside the mutex: destroyView clears it under
+    // the same mutex before freeing the buffer, so a draw that passes
+    // here cannot race a teardown.
+    if (!_view_live) {
+        xSemaphoreGive(_image_mutex);
+        return false;
+    }
+    if (!_image_buf) {
+        /* The first rectangle of an image: a black screen to draw onto. */
+        _image_buf = static_cast<uint16_t *>(heap_caps_calloc(
+            (size_t)kScreenPx * kScreenPx, sizeof(uint16_t), MALLOC_CAP_SPIRAM));
+        if (!_image_buf) {
+            xSemaphoreGive(_image_mutex);
+            return false;
+        }
+    }
+    const uint8_t *src = reinterpret_cast<const uint8_t *>(pixels);
+    for (int row = 0; row < h; row++) {
+        uint16_t *dst = _image_buf + (size_t)(y + row) * kScreenPx + x;
+        for (int i = 0; i < w; i++, src += 2) {
+            dst[i] = (uint16_t)(src[0] << 8 | src[1]);
+        }
+    }
+    if (!_image_dirty) {
+        _image_area = {x, y, x + w - 1, y + h - 1};
+        _image_dirty = true;
+    } else {
+        _image_area.x1 = LV_MIN(_image_area.x1, x);
+        _image_area.y1 = LV_MIN(_image_area.y1, y);
+        _image_area.x2 = LV_MAX(_image_area.x2, x + w - 1);
+        _image_area.y2 = LV_MAX(_image_area.y2, y + h - 1);
+    }
+    xSemaphoreGive(_image_mutex);
+    return true;
+}
+
+void MuseUi::imageDone()
+{
+    /* A colour panel shows each rectangle as it comes; nothing to do. */
+}
+
+void MuseUi::imageHide()
+{
+    if (!board_display_lock(-1)) {
+        return;
+    }
+    imageHideLocked();
+    board_display_unlock();
+}
+
+void MuseUi::imageHideLocked()
+{
+    if (!_image_mutex) {
+        return;
+    }
+    xSemaphoreTake(_image_mutex, portMAX_DELAY);
+    if (_image_buf) {
+        if (_image) {
+            lv_obj_add_flag(_image, LV_OBJ_FLAG_HIDDEN);
+            lv_image_set_src(_image, nullptr);
+        }
+        heap_caps_free(_image_buf);
+        _image_buf = nullptr;
+        _image_dsc.data = nullptr;
+        _image_dirty = false;
+    }
+    xSemaphoreGive(_image_mutex);
+}
+
+/* Each frame: shows a new image and redraws what the download changed. */
+void MuseUi::imageSync()
+{
+    if (!_image_mutex || !_image) {
+        return;
+    }
+    xSemaphoreTake(_image_mutex, portMAX_DELAY);
+    if (_image_buf && !_image_dsc.data) {
+        _image_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+        _image_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        _image_dsc.header.w = kScreenPx;
+        _image_dsc.header.h = kScreenPx;
+        _image_dsc.header.stride = kScreenPx * sizeof(uint16_t);
+        _image_dsc.data_size = (size_t)kScreenPx * kScreenPx * sizeof(uint16_t);
+        _image_dsc.data = (const uint8_t *)_image_buf;
+        lv_image_set_src(_image, &_image_dsc);
+        lv_obj_remove_flag(_image, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (_image_dirty) {
+        lv_obj_invalidate_area(_image, &_image_area);
+        _image_dirty = false;
+    }
+    xSemaphoreGive(_image_mutex);
+}
+
+void MuseUi::imageEventCallback(lv_event_t *event)
+{
+    auto *instance = static_cast<MuseUi *>(lv_event_get_user_data(event));
+    if (!instance || lv_event_get_code(event) != LV_EVENT_SHORT_CLICKED) {
+        return;
+    }
+    // A tap dismisses the image — and must not also reach the root's
+    // SHORT_CLICKED handler (which would start a talk): stop the event
+    // bubbling here. SHORT_CLICKED fires before CLICKED, so handling
+    // CLICKED (as the SDK does — its root has no SHORT_CLICKED talk)
+    // would be too late. A long press still bubbles to the root, where
+    // it starts a call, and the call hides the image.
+    lv_event_stop_bubbling(event);
+    instance->imageHideLocked();
+}
+
 void MuseUi::applyMode()
 {
     if (_mode_valid || !_ring || !_state_label) {
@@ -692,6 +867,10 @@ void MuseUi::frameTick()
 
     updateRing(now);
     updateMeter();
+
+    // A downloaded image shows its new bands (imageSync attaches the
+    // descriptor and unhides it on the first one).
+    imageSync();
 
     // A toast that expired hands the state name back to the status.
     if (_toast_until && lv_tick_get() >= _toast_until) {

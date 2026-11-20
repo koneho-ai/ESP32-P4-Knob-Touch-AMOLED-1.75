@@ -379,6 +379,7 @@ bool MuseApp::init()
             return false;
         }
     }
+    initLink();
     (void)_ui->preload();
 
     if (!_audio_client) {
@@ -521,6 +522,23 @@ bool MuseApp::deinit()
     // Let the task finish returning from the exit semaphore give before the
     // semaphore and queues are deleted.
     vTaskDelay(1);
+
+    // Link stops before the UI goes: a download drawing into a deleted
+    // view is refused by the shim, but stopping first is cleaner — and
+    // the connect worker must be gone before _link is deleted (it holds
+    // `this`). The control task's exit path already stopped Link in the
+    // usual case; this covers a deinit that never saw AppHidden.
+    if (_link) {
+        _link->disconnect();
+        TickType_t link_wait_started = xTaskGetTickCount();
+        while (_link->workerRunning() &&
+                xTaskGetTickCount() - link_wait_started <
+                    pdMS_TO_TICKS(LIFECYCLE_WAIT_MS)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        delete _link;
+        _link = nullptr;
+    }
 
     destroyUi();
     delete _ui;
@@ -920,6 +938,7 @@ void MuseApp::controlLoop()
     _visible.store(false);
     closeTurn();
     requestCallEnd();
+    stopLink();
     if (_client) {
         _client->stop();
     }
@@ -1063,6 +1082,9 @@ void MuseApp::pollProvisioning()
         } else {
             setState(State::NetworkRequired);
         }
+        // Pairing can finish while the app is open: Link starts with the
+        // voice session once the device is provisioned.
+        startLink();
     } else {
         closeTurn();
         requestCallEnd();
@@ -1112,6 +1134,7 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
                 if (_provisioned.load()) {
                     setState(State::Connecting);
                     _client->testConnection();
+                    startLink();
                 } else {
                     setState(State::NotProvisioned);
                 }
@@ -1307,10 +1330,16 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         _client->configChanged();
         _client->testConnection();
         setState(State::Connecting);
+        // The refresh may invalidate Link's minted VM token: re-resolve.
+        restartLink();
         break;
+    case ControlEventType::LinkUnpaired:
+        // The server unpaired this device remotely: same as a revoked token.
+        [[fallthrough]];
     case ControlEventType::TokenRevoked:
         closeTurn();
         requestCallEnd();
+        stopLink();
         _client->stop();
         (void)muse_provisioning_unpair();
         _provisioned.store(false);
@@ -1320,6 +1349,11 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         setState(State::NotProvisioned);
         setChatMessage("", "Pairing expired\nPair again in the Muse app");
         startBleAdvertising();
+        break;
+    case ControlEventType::LinkAuthFailed:
+        // Link's VM credentials were rejected: refresh the device token;
+        // TokenRefreshed restarts Link with fresh credentials.
+        startTokenRefresh();
         break;
     case ControlEventType::TokenRefreshFailed:
         // Stay in Error; the retry timer re-attempts the refresh.
@@ -1379,6 +1413,9 @@ void MuseApp::handleAppVisible()
     // Last: listening needs the session, the provisioned state and the
     // network above, so it starts only once those are settled.
     startWakeListening();
+    // Link follows the same visibility: it starts with the voice session
+    // when the app is visible, never in init() and never always-on.
+    startLink();
 }
 
 void MuseApp::handleAppHidden(bool release_audio)
@@ -1386,6 +1423,7 @@ void MuseApp::handleAppHidden(bool release_audio)
     // Listening stops first: the wake word only works while visible, and
     // the core closes any open capture when listening goes off.
     stopWakeListening();
+    stopLink();
     closeTurn();
     requestCallEnd();
     // Leaving the screen mid-pairing ends pairing: the Muse app can only
@@ -1889,6 +1927,11 @@ void MuseApp::startTurn(bool hands_free)
     }
     _wake_turn_active.store(hands_free);
     clearConversationUi();
+    // A talk dismisses a downloaded image (SDK: an image hides on a tap,
+    // a talk or display.show_animation).
+    if (_ui) {
+        _ui->imageHide();
+    }
     _turn_done.store(false);
     _drain_posted.store(false);
     _played_frames.store(0);
@@ -2065,6 +2108,65 @@ void MuseApp::feedWakeSeedIfPending()
     muse_wakeword_clear_seed();
 }
 
+// ---- Link session (Phase 4.3) ----
+//
+// The Noise session to the VM (MuseLink) follows app visibility: it
+// starts with the voice session when the app is visible and stops on
+// hide. The callbacks only post control events (non-blocking) — they run
+// on the noise_ctrl task or the connect worker, which must never stall.
+// UNTESTED ON HARDWARE.
+
+void MuseApp::initLink()
+{
+    if (_link) {
+        return;
+    }
+    MuseLink::Callbacks callbacks;
+    callbacks.onUnpaired = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::LinkUnpaired;
+        (void)postControlEventNowait(event);
+    };
+    callbacks.onAuthFailed = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::LinkAuthFailed;
+        (void)postControlEventNowait(event);
+    };
+    _link = new (std::nothrow) MuseLink(callbacks);
+    if (!_link) {
+        ESP_UTILS_LOGE("Create Muse Link");
+    }
+}
+
+void MuseApp::startLink()
+{
+    if (!_link || !_visible.load() || !_provisioned.load() || !isNetworkReady()) {
+        return;
+    }
+    // Lazy, like the voice session: the app costs nothing until opened.
+    // init() is idempotent, so this is safe on every show.
+    if (!_link->init()) {
+        ESP_UTILS_LOGE("Init Muse Link");
+        return;
+    }
+    _link->connect();
+}
+
+void MuseApp::stopLink()
+{
+    if (_link) {
+        _link->disconnect();
+    }
+}
+
+void MuseApp::restartLink()
+{
+    if (!_link || !_visible.load() || !_provisioned.load() || !isNetworkReady()) {
+        return;
+    }
+    _link->restart();
+}
+
 // ---- Realtime voice calls (Phase 4.1) ----
 
 void MuseApp::startCall()
@@ -2093,6 +2195,11 @@ void MuseApp::startCall()
         return;
     }
     clearConversationUi();
+    // A call dismisses a downloaded image, like a talk does (a long
+    // press on the image bubbles to the root and starts the call).
+    if (_ui) {
+        _ui->imageHide();
+    }
     _call_end_requested.store(false);
     _call_working.store(false);
     _in_call.store(true);

@@ -123,8 +123,12 @@ Stripped (not vendored): `muse_audio.c` (board audio — the factory
 full layout; the avatar renderer itself IS vendored — see
 `muse_avatar` below), `app.c` orchestration, `ble_server.c` /
 `link_pairing.c` (BLE pairing is a separate component, `MuseBlePairing`),
-`noise_control.cpp` / tunnel, `image_fetch`, OTA, Opus,
-`muse_aec.c` (see "Realtime voice calls" below), `muse_wakeword`.
+OTA, Opus, `muse_aec.c` (see "Realtime voice calls" below).
+`noise_control.cpp` / tunnel and `image_fetch` live in their own
+component now — see `muse_link` below — as does `muse_wakeword` (see
+`muse_wakeword` below). The slim `muse_link.h` stubs
+in `muse_factory_glue.c` report the provisioning state and resolve
+the VM through the account API (Phase 4.3).
 
 One deliberate boundary crossing: `MuseClient::stop()` includes
 `muse_chat_priv.h` to call `muse_hatch_chat_forget()` (drop the Noise
@@ -364,6 +368,96 @@ Limits, intrinsic to the feature (not port gaps):
   29 KB PSRAM runner, ~133 KB PSRAM audio buffers) are the only
   numbers until then.
 
+### `components/muse_link/` — Link session to the VM (Phase 4.3, 2026-11-20)
+
+From `sdk-ref/esp32/main/`, verbatim except the two adaptations below
+(5,877 lines):
+
+- `noise_control.cpp` / `.h` — the Noise-over-WebSocket session to the
+  VM (TLS to hatch.metaaivm.com:443, WS upgrade, Noise_XX handshake,
+  link.register on stream 1, daemon requests on streams ≥16, one
+  12 KB-stack task, reconnect backoff 1 s doubling to 15 s, 60 s on
+  auth failure, WS ping every 60 s, 150 s silence reconnect,
+  link.heartbeat every 24 h). With PSRAM the inbound scratch is 64 KB
+  (so `noise_ctrl_req_max_body()` is ~62 KB) and the outbound scratch
+  12 KB.
+- `image_fetch.c` / `.h` — the image downloader (baseline JPEG only,
+  hardware JPEG peripheral on P4 — the P4's ROM has no TJpgDec, which
+  the SDK already anticipates; ≤4 MB file into PSRAM, scale 1/2/4/8,
+  16-row bands via draw_rect, 60 s deadline, one download at a time,
+  draw_file via Range requests over the Noise session).
+- `noise_tunnel.cpp` / `.h` + `noise_tunnel_internal.h` — the tunnel
+  data plane, needed even with the tunnel OFF: it owns the
+  DMA-headroom functions noise_control.cpp calls unconditionally.
+- `link_events.c` / `.h` — the connectivity history ring (128 events,
+  PSRAM; device.health carries the newest 40).
+- `link_probe.c` / `.h` — the stall probe (TCP to 1.1.1.1/8.8.8.8:443).
+- `stack_monitor.c` / `.h` — the session task's stack watermark.
+- Header-only: `noise_upgrade.h`, `ws_mask.h` (both static-inline),
+  `ble_commands.h`, `led_status.h`, `tunnel_netif.h` (declared only —
+  the tunnel is off, so nothing calls them; the one call site is
+  guarded by CONFIG_HOMEHUB_TUNNEL).
+- `muse_device_guide.c` — factory-new: the device guide Link sends to
+  Muse (device.guide), adapted from the SDK's main/guide.md for the
+  P4 Knob (no discover/sensors/ble.*/camera; recovery via the settings
+  page's sign-out; Link runs only while the Muse app is on screen).
+  1,464 bytes, under the 4,096 cap.
+
+Adaptations (two, both marked in the files):
+
+- `link_probe.c`: the SDK's wifi_mgr does not exist here; the probe
+  reads the factory wifi_service (WIFI_SERVICE_CONNECTED = has an IP).
+- `noise_control.cpp`: the 12 KB stack reserve is guarded on
+  CONFIG_MUSE_LINK_STACK_RESERVE (factory Kconfig, default y, depends
+  on SPIRAM) instead of the SDK's CONFIG_MUSE_ENABLED, which the
+  factory deliberately leaves undefined (defining it would pull
+  muse_state_power() and the SDK's power UI).
+
+Kconfig (factory-new): model id `muse-gadget-p4-knob`, model name
+`Waveshare ESP32-P4 Knob Touch AMOLED 1.75`, HOMEHUB_DAEMON_REQUESTS /
+DISPLAY_COMMANDS / LED_BACKEND_MUSE / VOICE all default y
+(voice.configure is the only voice command — there is no
+voice.play_url in the SDK). Deliberately undefined: MUSE_ENABLED,
+HOMEHUB_TUNNEL, HOMEHUB_BLE_COMMANDS, MUSE_WASM_APPS,
+HOMEHUB_FAST_GCM, MUSE_WATCHER_CAMERA / MUSE_P4_CSI_CAMERA,
+HOMEHUB_SHOW_AGENT_NAME (no GET /identity fetch).
+CONFIG_MUSE_WAKEWORD_ENABLE (Phase 4.2) makes Link advertise
+wakeword.disable.
+
+The lifecycle lives in the MuseApp component (the MuseLink class +
+the led_status shim), so this component has no MuseApp dependency.
+Link follows app visibility — the user's decision (2026-11-20): it
+starts with the voice session when MuseApp becomes visible and stops
+on hide; there is no always-on connection and it never starts in
+MuseApp::init(). Credential resolution (one fetch_vms call) runs on
+a worker task with an internal-RAM stack; a stop flag + mutex make a
+disconnect always win over a connect in flight.
+
+Commands (mirroring the SDK's app.c on_ws_command): display.draw_url,
+display.draw_file, display.show_animation, voice.configure (the factory
+audio service is the one volume, 0-100, NVS-backed), wakeword.disable
+(opt-out saved to NVS; only someone at the device can turn listening
+back on). Not implemented via Link: device.list_vms / set_vm /
+reset_vm / unpair (handled locally by the settings page, Phase 4.4),
+device.discover, sensors.read, camera.capture, ble.*, app.*,
+bug.report — all answer "unsupported".
+
+Limits, intrinsic to the port (not port gaps):
+
+- **Visible-only, absolute.** Commands work only while the Muse app is
+  on screen; the session (and its reconnect backoff) dies on hide.
+- **Two Noise+TLS sessions.** Voice and Link hold separate sessions to
+  the VM at once; untested on hardware.
+- **JPEG peripheral contention.** Gallery holds its JPEG engine for its
+  whole worker lifetime; image_fetch creates its own engine per
+  download. Whether IDF v6.1.1 allows two concurrent decoder engines
+  on the P4's single JPEG peripheral is unverified — a failure is
+  graceful (a command error, no crash).
+- **No battery in device.health.** MUSE_ENABLED is undefined, so the
+  health JSON carries nulls for battery/power (like the SDK's
+  non-MUSE boards); uptime, memory, network and connectivity history
+  are there.
+
 ### `components/muse_vm/` — VM account + credential store (slimmed)
 
 From `sdk-ref/esp32/main/`, slimmed to what the app needs:
@@ -427,7 +521,12 @@ falls back to the out-of-band path (plan R1 option b).
 
 Written from scratch, modeled directly on the factory `XiaozhiApp`
 (same lifecycle hardening, audio-client and knob patterns, same LVGL
-look). See `components/MuseApp/README.md`.
+look). See `components/MuseApp/README.md`. Phase 4 pieces live here:
+the wake-word glue (`muse_wakeword_glue`, Phase 4.2), the Link
+lifecycle (`MuseLink` class + the `led_status` shim in
+`muse_led_status.cpp`, Phase 4.3) and the downloaded-image overlay in
+MuseUi (full-screen lv_image over the avatar, PSRAM RGB565 buffer,
+dismissed by a tap, a talk or display.show_animation).
 
 ## Provisioning interface
 
@@ -457,9 +556,10 @@ cache; they leave the device only in the `Authorization` header of
 - Spoken replies / TTS — see "Replies are text-only" above.
 - Software echo cancellation (`muse_aec.c`) — no playback reference on
   this board; calls are half-duplex (see "Realtime voice calls" above).
-- Link control session (`muse_link` ops beyond the two stubs) — the
-  factory firmware has no Link; own-token path only.
-- OTA, Opus, `image_fetch`, `noise_control`/tunnel, `muse_ui.c`
+- The Link tunnel (HOMEHUB_TUNNEL), BLE commands, WASM apps, fast GCM,
+  camera capture, sensors, bug.report — no hardware or server behind
+  them on this board; Link answers "unsupported" for those commands.
+- OTA, Opus, `muse_ui.c`
   (MuseUi re-implements its full layout; the avatar renderer itself IS
   vendored — see `muse_avatar` above), `muse_audio.c`, board drivers,
   `app.c` orchestration.
@@ -493,21 +593,20 @@ saved, 19% of the 14 MiB app partition free.
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xb9a9e0 bytes (12,167,648) against a 0xe00000 (14 MiB) app partition —
+0xba8ec0 bytes (12,226,240) against a 0xe00000 (14 MiB) app partition —
 17% free, after the USB Screen removal, the avatar port, the Phase 4.1
-realtime calls and the Phase 4.2 wake word (was 0xb76310 / 12,018,448,
-18.1% free, after the calls; the wake word added 149,200 bytes —
-ExecuTorch + esp-nn + micro-speech features + the 23,492-byte model +
-glue); DIRAM 267,346 /
-655,360 (40.79%) at Phases 0-3. Build #10 notes: the `muse_avatar`
-component's `file(GLOB ... CONFIGURE_DEPENDS ...)` failed configure —
-ESP-IDF includes component CMakeLists in script mode while gathering
-requirements, where that flag is invalid (dropped it); and a failed
-configure leaves `build/` in a state `idf.py` refuses to fullclean
-("doesn't seem to be a CMake build directory") — delete `build/`
-manually and re-run. `nm` on the build #10 ELF confirms
-`happy_anim_frames` is absent (GC'd, ~242 KB) while
-`muse_pixel_render` (15,626 B), `muse_pixel_scale`,
+realtime calls, the Phase 4.2 wake word and the Phase 4.3 Link session
+(was 0xb9a9e0 / 12,167,648, 17% free, after the wake word; Link added
+58,592 bytes — the vendored session + image downloader + glue). DIRAM
+267,346 / 655,360 (40.79%) at Phases 0-3. Build #10 notes: the
+`muse_avatar` component's `file(GLOB ... CONFIGURE_DEPENDS ...)`
+failed configure — ESP-IDF includes component CMakeLists in script
+mode while gathering requirements, where that flag is invalid
+(dropped it); and a failed configure leaves `build/` in a state
+`idf.py` refuses to fullclean ("doesn't seem to be a CMake build
+directory") — delete `build/` manually and re-run. `nm` on the
+build #10 ELF confirms `happy_anim_frames` is absent (GC'd, ~242 KB)
+while `muse_pixel_render` (15,626 B), `muse_pixel_scale`,
 `muse_pixel_set_size` and `muse_pixel_accent` are linked in. `nm` on
 the build #11 ELF confirms the call core is linked in
 (`muse_voice_call_poll`, `muse_voice_call_audio`/`read`,
@@ -517,7 +616,20 @@ the wake word is linked in: the embedded model
 (`_binary_hey_muse_pte_start`/`_end`, exactly 23,492 bytes),
 `muse_wakeword_core_tick` (480 B), `ww_runner_create` (2,060 B),
 `ww_detector_push`, and the glue (`muse_wakeword_set_active`,
-`set_playback`, `set_ptt_turn`, `seed_generation`, `turn_ended`). Items marked RESOLVED were
+`set_playback`, `set_ptt_turn`, `seed_generation`, `turn_ended`).
+`nm` on the build #13 ELF confirms the Link session is linked in:
+`noise_ctrl_init` (192 B) / `connect` (582 B) / `disconnect` (242 B),
+`image_fetch_start` / `start_vm`, `link_events_record`,
+`noise_ctrl_send_command_result`, the `led_status` shim
+(`led_status_display_info`, 30 B), `MuseLink::connectTask` (512 B)
+and `commandCallback` (1,032 B), the MuseUi image overlay
+(`imageDraw` 384 B, `imageSync`, `imageHide`, `imageSize`), and
+`muse_device_guide_md` (1,465 bytes incl. NUL). Build #13 notes:
+`lv_obj_add_flag` with two OR'd flags is an `int` in C++ and the
+factory LVGL rejects it — add flags one call at a time; and
+`muse_account_api.h` has no `extern "C"` guard, so a C++ consumer
+must wrap the include (the SDK's own `muse_chat_session.cpp` does).
+Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 

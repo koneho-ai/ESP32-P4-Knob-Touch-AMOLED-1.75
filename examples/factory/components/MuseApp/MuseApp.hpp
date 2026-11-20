@@ -15,6 +15,7 @@
 #include "audio_service.h"
 #include "muse_ble_pairing.h"
 #include "MuseClient.hpp"
+#include "MuseLink.hpp"
 #include "MuseUi.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -32,7 +33,13 @@ namespace esp_brookesia::apps {
  * tap to talk, tap again to send; the reply shows as text at reading pace
  * (v1 has no spoken replies — see MuseClient). A long press anywhere but
  * the avatar starts a realtime voice call instead (Phase 4.1): hands-free,
- * half-duplex, Muse's speech played live; tap hangs up. No wake word yet.
+ * half-duplex, Muse's speech played live; tap hangs up. "Hey Muse" starts
+ * a hands-free turn while the app is visible (Phase 4.2, opt-in). Link
+ * (Phase 4.3) holds a second Noise session to the VM for the agent's
+ * commands — display.draw_url/draw_file, display.show_animation,
+ * voice.configure, wakeword.disable — and follows the same visibility:
+ * it starts with the voice session when the app is visible and stops on
+ * hide; there is no always-on connection.
  *
  * Lifecycle: the session starts lazily on the first AppVisible (the app
  * costs nothing until opened), disconnects on AppHidden, and releases the
@@ -44,6 +51,18 @@ namespace esp_brookesia::apps {
 class MuseApp: public systems::phone::App {
 public:
     static MuseApp *requestInstance(bool use_status_bar = false, bool use_navigation_bar = false);
+    // The running instance, if any — unlike requestInstance, this never
+    // creates one (the Link display shim calls it from the download task).
+    static MuseApp *instance()
+    {
+        return _instance;
+    }
+    // The UI, if the app has been inited — null before init. The view
+    // itself may still be down (see MuseUi::imageSize).
+    MuseUi *ui()
+    {
+        return _ui;
+    }
     ~MuseApp();
 
 protected:
@@ -109,6 +128,8 @@ private:
         WakeTurnStart,  // value: disable generation; open a hands-free turn
         WakeTurnEnd,    // flag: submit (true) or drop (false) the hands-free turn
         WakeCancelled,  // an armed wake was cancelled; clear the prompt
+        LinkUnpaired,   // server sent node.unpaired: unpair like TokenRevoked
+        LinkAuthFailed, // Link needs fresh VM credentials: refresh the token
         Shutdown,
     };
 
@@ -134,6 +155,7 @@ private:
     lv_timer_t *_ui_timer = nullptr;
     MuseUi *_ui = nullptr;
     MuseClient *_client = nullptr;
+    MuseLink *_link = nullptr;
 
     SemaphoreHandle_t _state_mutex = nullptr;
     SemaphoreHandle_t _lifecycle_mutex = nullptr;
@@ -297,8 +319,19 @@ private:
     void stopWakeListening();
     void feedWakeSeedIfPending();
 
-    // ---- Realtime voice calls (Phase 4.1) ----
-    // startCall runs on the control task; callAudio is the dedicated call
+    // ---- Link session (Phase 4.3) ----
+    // initLink creates the MuseLink object once, in init() (cheap — just
+    // callbacks and flags). startLink inits the Noise session lazily on
+    // first AppVisible and connects it; it only runs while visible,
+    // provisioned and online. stopLink disconnects on hide (blocks until
+    // the session task exits). restartLink re-resolves the VM credentials
+    // after a token refresh, which may invalidate the minted VM token.
+    void initLink();
+    void startLink();
+    void stopLink();
+    void restartLink();
+
+    // ---- Realtime voice calls (Phase 4.1) ----    // startCall runs on the control task; callAudio is the dedicated call
     // task (the SDK's run_call): one 10 ms pass reads the mic, drains call
     // events, feeds gated mic audio, reads reply audio and writes it. It
     // uses the same audio client and resamplers as the turn tasks, which
