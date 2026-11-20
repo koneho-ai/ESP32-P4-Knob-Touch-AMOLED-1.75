@@ -1,0 +1,10 @@
+menu "Muse avatar"
+
+    # The SDK's display guard, so the vendored happy_anim files compile
+    # verbatim (they wrap their data in `#if CONFIG_HOMEHUB_DISPLAY`).
+    # This firmware always has a display.
+    config HOMEHUB_DISPLAY
+        bool "Display present (SDK guard for the avatar assets)"
+        default y
+
+endmenu

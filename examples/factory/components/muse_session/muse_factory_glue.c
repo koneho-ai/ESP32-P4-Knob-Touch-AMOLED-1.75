@@ -95,5 +95,5 @@ void muse_state_page(const char *text, int *cols, int *lines)
 {
     (void)text;
     *cols = 26;
-    *lines = 4;
+    *lines = 3;  // MuseUi's caption box: 3 lines under the shrunk avatar
 }

@@ -1,0 +1,3 @@
+# A custom avatar renderer (avatar/muse_pixel.c) stays on this machine,
+# like the SDK's components/muse/avatar/.
+avatar/

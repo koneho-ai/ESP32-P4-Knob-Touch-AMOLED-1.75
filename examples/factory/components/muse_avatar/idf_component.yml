@@ -1,0 +1,2 @@
+version: "0.1.0"
+description: "Muse avatar renderer, vendored from the Muse gadget SDK (see examples/factory/VENDORED.md)."

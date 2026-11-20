@@ -150,6 +150,12 @@ bool MuseClient::captionAt(size_t played, char *out, size_t cap)
     return muse_hatch_turn_caption(played, out, cap);
 }
 
+float MuseClient::turnProgress(size_t played)
+{
+    int message = -1;
+    return muse_turn_progress(played, &message);
+}
+
 muse_vm_refresh_result_t MuseClient::refreshTokens()
 {
     return muse_vm_refresh_tokens_ex();

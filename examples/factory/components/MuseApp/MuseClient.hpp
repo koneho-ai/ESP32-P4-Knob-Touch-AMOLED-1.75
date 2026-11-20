@@ -100,6 +100,11 @@ public:
     // of reply speech. False until there's reply text to page.
     bool captionAt(size_t played, char *out, size_t cap);
 
+    // Approximate reply progress at the same playback cursor as captions,
+    // 0..1 (1 = this message has drained; the ring caps at 99% until the
+    // whole turn succeeds). Call from the control task, like captionAt.
+    float turnProgress(size_t played);
+
     // Refreshes the device-token pair via the account API (access leg, then
     // refresh leg) and stores the new pair. Blocking HTTPS: call from a task
     // that may block for seconds, never from the preempt callback or the

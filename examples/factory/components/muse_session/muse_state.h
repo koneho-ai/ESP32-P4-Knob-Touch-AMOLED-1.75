@@ -22,12 +22,26 @@
  * The SDK's UI state (mode, caption, level, progress, ...) lives in the
  * Muse app's own state machine and MuseUi here. The vendored chat code
  * only needs the caption page size, which muse_factory_glue.c answers
- * from the Muse UI's reply-label geometry.
+ * from the Muse UI's reply-label geometry. The avatar renderer
+ * (muse_avatar/muse_pixel.h) needs the mode enum, so it lives here too
+ * — the single copy, taken verbatim from the SDK's muse_state.h.
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* The avatar's animation mode (SDK muse_state.h, verbatim). */
+typedef enum {
+    MUSE_MODE_BOOT = 0,
+    MUSE_MODE_IDLE,
+    MUSE_MODE_LISTENING,
+    MUSE_MODE_THINKING,
+    MUSE_MODE_SPEAKING,
+    MUSE_MODE_ERROR,
+    MUSE_MODE_OFF,       /* powering down */
+    MUSE_MODE_COUNT,
+} muse_mode_t;
 
 /* The reply caption's page: how many characters across, how many lines. */
 void muse_state_page(const char *text, int *cols, int *lines);

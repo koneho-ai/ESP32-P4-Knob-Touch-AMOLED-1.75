@@ -5,16 +5,17 @@ factory firmware. Modeled directly on the factory Xiaozhi app
 (`../XiaozhiApp/`): same Brookesia `phone::App` lifecycle, same audio-client
 and knob patterns, same LVGL look — but the backend is Muse, not Xiaozhi.
 
-> **UNTESTED ON HARDWARE** — no board exists yet. This code has had compile
-> verification only (and not even a full `idf.py build` at the time of
-> writing). Expect bring-up fixes around the audio chain, the mic channel
-> order, and the session's behavior on the real VM.
+> **UNTESTED ON HARDWARE** — no board exists yet. The firmware builds
+> green on ESP-IDF v6.1.1, but nothing has run on a device. Expect
+> bring-up fixes around the audio chain, the mic channel order, and the
+> session's behavior on the real VM.
 
 ## What it does
 
-- Tap the orb to talk; tap again to send. Muse's reply appears as text on
-  the screen, paced like speech (see "Replies are text-only" below).
+- Tap anywhere to talk; tap again to send. Muse's reply appears as text
+  on the screen, paced like speech (see "Replies are text-only" below).
 - Tap while Muse is thinking or speaking to cancel.
+- Long-press the avatar to pet it (the SDK's happy reaction).
 - Turn the knob for volume. A long press / leaving the app closes the
   session and releases the audio codec, exactly like Xiaozhi.
 - Offline, it offers the WLAN settings page (`Settings::openWlan`).
@@ -50,7 +51,7 @@ NimBLE pairing server; see `../MuseBlePairing/INTEGRATION.md`). The flow:
    Settings — the app respects the Settings toggle.
 2. In the Muse app, pair the device. The phone and the device run the
    pairing-v5 handshake (P-256 ECDH + HKDF + AES-256-GCM).
-3. The device shows "CONFIRM PAIRING?" — tap the orb to confirm.
+3. The device shows "CONFIRM PAIRING?" — tap to confirm.
 4. The phone sends `provision_v2` (Wi-Fi credentials + the minted device
    token pair). The device joins the Wi-Fi network, stores the tokens in
    the NVS namespace `museapp` (via `../muse_vm/muse_provisioning.h`,
@@ -85,6 +86,32 @@ pairing. The BLE name is `MuseGadget-XXXXXX`.
 | SPEAKING | Reply playing | Interrupts |
 | ERROR | Something failed (detail on screen) | Retries |
 
+## The avatar
+
+The screen shows the SDK's animated avatar face, not the factory
+Xiaozhi-style orb it replaced: the procedural pixel-art character
+(`../muse_avatar`, vendored from the SDK) in the middle, a 458 px
+progress ring around the bezel, a 14-segment mic level meter under the
+avatar while listening, the state name at the top, and a 3-line caption
+box at the bottom. While a reply (or the user transcript) shows, the
+avatar shrinks to 256 px to make room, as the SDK's heard-answer layout
+does. The ring fills with recording length while listening (over the
+15 s a voice note runs to) and with reply progress while speaking, and
+spins while thinking. The avatar's animations follow the app state
+(idle, listening, thinking, speaking, error), with a wake-up animation
+for the first 1.4 s after the app opens. The caption box is the page the
+session core pages to (26 columns, 3 lines), and reply pages are
+additionally wrapped to the box's pixel width in the caption font
+(`muse_chat_set_caption_px`, wired up in `MuseApp::createUi`).
+
+Deliberate deviations from the SDK's face tile: no volume swipe (the
+knob is the volume control), no speaker/mute button, no settings or
+latest-reply tile (the Brookesia launcher owns navigation), and one
+caption box for both the transcript and the reply page (the SDK's
+separate live-caption line would overlap the reply box here). The state
+label uses Montserrat 16 — the factory LVGL has no Unscii, which the
+SDK uses. See `MuseUi.hpp` for the full layout notes.
+
 ## How it fits together
 
 ```
@@ -92,8 +119,9 @@ MuseApp (this component)
   MuseApp.cpp    Brookesia app: state machine, FreeRTOS tasks
                  (control / capture / playback / token refresh), UI glue
   MuseClient.cpp Adapter over the vendored session core + credential store
-  MuseUi.cpp     LVGL orb / status / chat text (466 px round screen)
+  MuseUi.cpp     LVGL avatar face / ring / meter / captions (SDK full layout)
   assets/        Home-screen icon (112x112 ARGB8888, bunny motif)
+../muse_avatar   Vendored SDK avatar renderer (muse_pixel.c, happy_anim)
 ../muse_session  Vendored SDK session core (Noise + HTTPS + dictation)
 ../muse_vm       VM discovery, device-token mint/refresh, NVS store,
                  and the shared provisioning interface (muse_provisioning.h)

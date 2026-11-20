@@ -92,13 +92,15 @@ New / rewritten for the factory firmware:
 - `muse_factory_glue.c` — implements the session's external hooks
   against factory services: `muse_wifi_connected()` from `wifi_service`,
   settings/VM/token from the `muse_vm` RAM cache, `muse_state_page()`
-  (26 cols × 4 lines, matching the MuseUi reply label), Link hooks
+  (26 cols × 3 lines, matching the MuseUi caption box), Link hooks
   stubbed to "not linked".
 - Slim headers replacing SDK ones the session includes but that carried
   board/UI dependencies: `muse_link.h` (only `muse_link_hatch_linked` /
   `muse_link_hatch_vm`), `muse_settings.h` (only the four `hatch`
   getters + size bounds), `muse_wifi.h` (only `muse_wifi_connected`),
-  `muse_state.h` (only `muse_state_page`).
+  `muse_state.h` (only `muse_state_page`, plus the `muse_mode_t` enum —
+  the avatar renderer includes this header for it, so the enum lives
+  here as the single copy).
 - `Kconfig` — the five `CONFIG_MUSE_*` symbols the vendored sources
   read: `MUSE_HATCH_COMPACT_BUFFERS` (n), `MUSE_REALTIME_VOICE` (n),
   `MUSE_REALTIME_VOICE_APP_ID` ("hatch-web"), `MUSE_BOARD_SENSECAP_WATCHER`
@@ -109,11 +111,12 @@ New / rewritten for the factory firmware:
 - `idf_component.yml` — `espressif/cjson ^1.7.19`.
 
 Stripped (not vendored): `muse_audio.c` (board audio — the factory
-`audio_client` API replaces it), `muse_ui.c` / avatar, `app.c`
-orchestration, `ble_server.c` / `link_pairing.c` (BLE pairing is a
-separate component, `MuseBlePairing`), `noise_control.cpp` / tunnel,
-`image_fetch`, OTA, Opus, `muse_voice_call` realtime sources,
-`muse_wakeword`.
+`audio_client` API replaces it), `muse_ui.c` (MuseUi re-implements its
+full layout; the avatar renderer itself IS vendored — see
+`muse_avatar` below), `app.c` orchestration, `ble_server.c` /
+`link_pairing.c` (BLE pairing is a separate component, `MuseBlePairing`),
+`noise_control.cpp` / tunnel, `image_fetch`, OTA, Opus,
+`muse_voice_call` realtime sources, `muse_wakeword`.
 
 One deliberate boundary crossing: `MuseClient::stop()` includes
 `muse_chat_priv.h` to call `muse_hatch_chat_forget()` (drop the Noise
@@ -160,6 +163,58 @@ Other session facts the app relies on:
 - `post()` blocks up to 100 ms on a full queue: never call session
   functions from the audio preempt callback; set flags and post a
   control event instead.
+
+### `components/muse_avatar/` — the Muse character (2026-11-20)
+
+From the SDK, copied verbatim (SDK commit `6a44074`):
+
+- `muse_pixel.c` (40,319 bytes) — the procedural pixel-art renderer:
+  a 64×64 indexed grid (Jollybot, Meta's character) with an animation
+  for each state (boot, idle, listening, thinking, speaking, error,
+  off, happy). From `sdk-ref/esp32/avatar/muse_pixel.c`.
+- `muse_pixel.h` / `muse_speaking.h` — the renderer's API
+  (`muse_pixel_render`, `muse_pixel_scale`, `muse_pixel_set_size`,
+  `muse_pixel_accent`, `muse_pose_t`) and its speaking choreography.
+  From `sdk-ref/esp32/components/muse/`.
+- `happy_anim.c` (546,254 bytes) / `happy_anim.h` — the 75-frame happy
+  animation (56×59, 40 ms/frame, ~242 KB rodata), generated from
+  `jollybot.gif` by the SDK's `tools/gen_happy_anim.py`. From
+  `sdk-ref/esp32/avatar/`.
+
+The avatar is **procedural pixel art, not video**: there is no avatar
+video in the SDK to port. The SDK's `libvpx_vp8` VP8 decoder belongs to
+its phone-camera streaming feature (`MUSE_VIDEO`, opt-in), not to the
+avatar. `happy_anim` is used only by the SDK's non-LVGL status displays
+(`main/epaper_status.c`, `main/led_status.c`) — the LVGL face never
+draws it, here or in the SDK. It is vendored for asset parity and
+compiles here (guarded by `CONFIG_HOMEHUB_DISPLAY`, as in the SDK);
+the linker drops the unreferenced frames, exactly as the SDK's
+LVGL-board builds do (verified: `happy_anim_frames` is absent from
+the linked ELF — see the build note below).
+
+Licensing: the Apache License does not cover the Jollybot avatar in
+`avatar/`; its files carry only a Meta copyright line — no Apache
+header was added to them. `muse_pixel.h` includes `muse_state.h` for
+`muse_mode_t`; the slim `muse_state.h` in `muse_session` carries that
+enum (from the SDK's `muse_state.h`).
+
+New for the factory firmware: `CMakeLists.txt` (with the SDK's
+custom-avatar override — a `avatar/muse_pixel.c` in this component,
+gitignored, replaces the default renderer, the way the SDK's
+`tools/muse/avatar.py` does), `Kconfig` (`CONFIG_HOMEHUB_DISPLAY`,
+default y, so the vendored files compile verbatim),
+`idf_component.yml`, `README.md`.
+
+`MuseUi` drives the renderer the way the SDK's `muse_ui.c` does: a
+custom LVGL image decoder scales the grid up in 16-row strips, a
+40 ms timer builds the pose and re-renders, a cell-diff invalidates
+only the changed cells, and the 458 px ring + 14-segment meter follow
+the SDK's behaviour (progress while listening/speaking, 60° spinner
+while thinking). Deliberate deviations: no volume swipe (the knob is
+the volume control), no speaker/mute button, no settings/latest-reply
+tile, one caption box for transcript + reply, pet on long-press
+(the SDK's face tap is pet, but here a tap talks), Montserrat 16 for
+the state label (no Unscii in the factory LVGL).
 
 ### `components/muse_vm/` — VM account + credential store (slimmed)
 
@@ -257,8 +312,10 @@ cache; they leave the device only in the `Authorization` header of
 - Spoken replies / TTS — see "Replies are text-only" above.
 - Link control session (`muse_link` ops beyond the two stubs) — the
   factory firmware has no Link; own-token path only.
-- OTA, Opus, `image_fetch`, `noise_control`/tunnel, `muse_ui`/avatar,
-  `muse_audio.c`, board drivers, `app.c` orchestration.
+- OTA, Opus, `image_fetch`, `noise_control`/tunnel, `muse_ui.c`
+  (MuseUi re-implements its full layout; the avatar renderer itself IS
+  vendored — see `muse_avatar` above), `muse_audio.c`, board drivers,
+  `app.c` orchestration.
 - Power saving: `muse_hatch_set_resting` is never called; the session
   idles with its 10-minute idle-close timer.
 
@@ -289,9 +346,20 @@ saved, 19% of the 14 MiB app partition free.
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xb65d90 bytes (11,951,504) against a 0xe00000 (14 MiB) app partition —
-19% free, after the USB Screen removal (was 0xb77d00 / 12,025,088, 18%
-free, at Phases 0-3); DIRAM 267,346 / 655,360 (40.79%) at Phases 0-3. Items marked RESOLVED were
+0xb6bc50 bytes (11,975,760) against a 0xe00000 (14 MiB) app partition —
+18% free, after the USB Screen removal and the avatar port (was
+0xb77d00 / 12,025,088, 18% free, at Phases 0-3; the USB removal saved
+73,584 bytes, the avatar port added 24,256); DIRAM 267,346 / 655,360
+(40.79%) at Phases 0-3. Build #10 notes: the `muse_avatar` component's
+`file(GLOB ... CONFIGURE_DEPENDS ...)` failed configure — ESP-IDF
+includes component CMakeLists in script mode while gathering
+requirements, where that flag is invalid (dropped it); and a failed
+configure leaves `build/` in a state `idf.py` refuses to fullclean
+("doesn't seem to be a CMake build directory") — delete `build/`
+manually and re-run. `nm` on the build #10 ELF confirms
+`happy_anim_frames` is absent (GC'd, ~242 KB) while
+`muse_pixel_render` (15,626 B), `muse_pixel_scale`,
+`muse_pixel_set_size` and `muse_pixel_accent` are linked in. Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 

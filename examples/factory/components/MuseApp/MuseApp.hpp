@@ -157,6 +157,8 @@ private:
     std::atomic<uint32_t> _input_pcm_peak{0};
     std::atomic<uint32_t> _output_pcm_peak{0};
     std::atomic<uint32_t> _played_frames{0};
+    std::atomic<float> _progress{0};    // Reply progress 0..1 (control task writes, LVGL task reads)
+    TickType_t _listen_started_tick = 0;   // When the current listen began (ring fills over 15 s)
     uint32_t _offline_since = 0;    // When "No network" first showed, 0 while online
     bool _wlan_offered = false;     // Settings opened by itself in this offline spell
     char _hint[64] = {};

@@ -559,6 +559,10 @@ void MuseApp::createUi()
         destroyUi();
         return;
     }
+    // Reply pages wrap to the caption box's pixel width, measured in the
+    // caption font, so no line wraps again on screen (SDK muse_ui.c: the
+    // full UI sets this when it picks its reply layout).
+    muse_chat_set_caption_px(MuseUi::kCaptionWidthPx, &MuseUi::captionGlyphPx);
     _ui_timer = lv_timer_create(uiTimerCallback, 100, this);
     refreshUi();
 }
@@ -604,7 +608,7 @@ void MuseApp::refreshUi()
     _ui->setNetworkReady(_network_ready.load());
     if (_confirm_pending.load()) {
         _ui->setStatus("CONFIRM PAIRING?");
-        _ui->setHint("Tap the orb to confirm");
+        _ui->setHint("Tap to confirm");
     } else {
         _ui->setStatus(stateText(state));
         _ui->setHint(hintText(state));
@@ -615,6 +619,20 @@ void MuseApp::refreshUi()
     } else if (state == State::Speaking) {
         _ui->setLevel(_output_pcm_peak.exchange(0) / VOICE_FULL_SCALE);
     }
+    // The ring's progress: while listening it fills over the 15 s a voice
+    // note runs to (the SDK's note cap); while speaking it follows the
+    // session's playback progress, sampled by the control task.
+    float progress = 0;
+    if (state == State::Listening) {
+        const uint32_t elapsed_ms = pdTICKS_TO_MS(xTaskGetTickCount() - _listen_started_tick);
+        progress = elapsed_ms / 15000.0f;
+        if (progress > 1) {
+            progress = 1;
+        }
+    } else if (state == State::Speaking) {
+        progress = _progress.load();
+    }
+    _ui->setProgress(progress);
     _ui->setChatMessage(role, text);
     if (toast[0] != '\0') {
         _ui->showToast(toast);
@@ -645,7 +663,7 @@ MuseUi::Mode MuseApp::uiMode(State state)
     }
 }
 
-/* What a tap does now, below the orb; offline it says what happens to the network */
+/* What a tap does now, below the avatar; offline it says what happens to the network */
 const char *MuseApp::hintText(State state)
 {
     switch (state) {
@@ -659,7 +677,7 @@ const char *MuseApp::hintText(State state)
         case MUSE_BLE_PAIRING_STATE_PAIRING:
             return "Pairing…";
         case MUSE_BLE_PAIRING_STATE_CONFIRM_REQUIRED:
-            return "Tap the orb to confirm";
+            return "Tap to confirm";
         case MUSE_BLE_PAIRING_STATE_CONFIRMED:
         case MUSE_BLE_PAIRING_STATE_PROVISIONING:
             return "Setting up…";
@@ -850,11 +868,13 @@ void MuseApp::controlTick(uint32_t tick)
         _client->pollEvents();
         if (state == State::Speaking) {
             // While a reply plays, the session pages the reply text by the
-            // playback cursor so the screen keeps up with the voice.
+            // playback cursor so the screen keeps up with the voice, and
+            // reports progress at the same cursor for the ring.
             char page[256] = {};
             if (_client->captionAt(_played_frames.load(), page, sizeof(page))) {
                 setChatMessage("assistant", page);
             }
+            _progress.store(_client->turnProgress(_played_frames.load()));
         }
     }
     // Session status every 500 ms drives Preparing/Connecting/Ready/Error.
@@ -1290,7 +1310,7 @@ void MuseApp::handleBleConfirmRequired(uint32_t generation)
 {
     _confirm_pending.store(true);
     _confirm_generation.store(generation);
-    setChatMessage("", "Pairing request\nTap the orb to confirm");
+    setChatMessage("", "Pairing request\nTap to confirm");
     // Arm only once the prompt is set: the control task owns the UI state
     // and the LVGL timer applies it within 100 ms; a tap queues behind
     // this event, so the user cannot confirm before seeing the prompt.
@@ -1675,6 +1695,8 @@ void MuseApp::startTurn()
     _turn_done.store(false);
     _drain_posted.store(false);
     _played_frames.store(0);
+    _progress.store(0);
+    _listen_started_tick = xTaskGetTickCount();
     _client->beginTurn();
     _capture_enabled.store(true);
     setState(State::Listening);
