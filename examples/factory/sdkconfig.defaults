@@ -154,3 +154,12 @@ CONFIG_MUSE_HATCH_COMPACT_BUFFERS=n
 CONFIG_MUSE_REALTIME_VOICE=y
 CONFIG_MUSE_REALTIME_VOICE_APP_ID="hatch-web"
 CONFIG_GADGET_SDK_TOKEN=""
+# Muse wake word ("Hey Muse", Phase 4.2): compiles the ExecuTorch runner
+# and the vendored hey_muse.pte model in. Listening itself is opt-in on
+# the device (the settings page switch) and only works while MuseApp is
+# visible. The ET/ESPNN lines mirror the SDK's overlay: size-optimised
+# ExecuTorch off, no ET logging, delegate constants in PSRAM off.
+CONFIG_MUSE_WAKEWORD_ENABLE=y
+# CONFIG_ET_OPTIMIZE_SIZE is not set
+# CONFIG_ET_ENABLE_LOGGING is not set
+# CONFIG_ESPNN_DELEGATE_CONSTANTS_TO_PSRAM is not set

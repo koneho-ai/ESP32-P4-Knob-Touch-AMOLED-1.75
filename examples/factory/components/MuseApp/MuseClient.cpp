@@ -88,6 +88,11 @@ void MuseClient::feedAudio(const int16_t *pcm, size_t frames)
     muse_hatch_turn_audio(pcm, frames);
 }
 
+size_t MuseClient::feedSeedAudio(const int16_t *pcm, size_t frames)
+{
+    return muse_hatch_turn_audio_wait(pcm, frames, 100);
+}
+
 void MuseClient::endTurn()
 {
     muse_hatch_turn_end();

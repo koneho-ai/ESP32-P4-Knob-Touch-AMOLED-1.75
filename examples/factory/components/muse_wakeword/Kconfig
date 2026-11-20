@@ -1,0 +1,120 @@
+# Muse wake word ("Hey Muse"), vendored from the Muse gadget SDK (see
+# examples/factory/VENDORED.md). Adapted from the SDK's
+# components/muse_wakeword/Kconfig: the menu depends on MUSE_APP_ENABLED
+# (the factory equivalent of the SDK's MUSE_ENABLED) instead, and the
+# FreeInk exclusion is dropped (no e-paper UI in this firmware).
+# SPDX-License-Identifier: Apache-2.0
+
+# Always defined, unlike MUSE_WAKEWORD_ENABLE (a bool whose dependencies are
+# unmet isn't written to sdkconfig), so this component's idf_component.yml can
+# pull the ExecuTorch registry component only into builds with the feature.
+config MUSE_WAKEWORD_EXECUTORCH
+    string
+    default "y" if MUSE_WAKEWORD_ENABLE
+    default "n"
+
+menu "Muse wake word"
+    depends on MUSE_APP_ENABLED
+
+    config MUSE_WAKEWORD_ENABLE
+        bool "Compile in hands-free wake word support"
+        depends on SPIRAM
+        default n
+        help
+            Saying "Hey Muse" starts the same voice note as tapping to
+            talk. This only compiles the feature in: listening also
+            needs the opt-in on the device itself (the wake-word switch
+            in the Muse app's settings page), so flashing this
+            firmware never starts listening on its own.
+
+            Listening only works while the Muse app is visible: the
+            Brookesia launcher runs at most 3 apps, and the app's audio
+            is released when it is hidden, so there is no background
+            listening. While listening is on, the microphone and codecs
+            stay powered, so expect much shorter battery life with the
+            wake word on.
+
+            Detection runs on the device: the microWakeWord-style
+            streaming model in models/hey_muse.pte, through ExecuTorch's
+            ESP-NN delegate, on TensorFlow Lite Micro's microfrontend
+            features (models/README.md has the model card). Audio leaves
+            the device only after a detection, as a voice note that
+            starts at most 1 s before the speech following it (so it
+            includes the wake word) and ends with that speech, a tap,
+            or 15 s. A detection with no speech after it sends
+            nothing; one followed by speech sends a voice note, so a
+            false trigger near conversation uploads one.
+
+            On a SenseCAP Watcher with the full UI the detector takes
+            about 2.5 ms of CPU per 30 ms (8 to 9% of one core at
+            240 MHz), 14 KB of internal RAM and 29 KB of PSRAM; the
+            component's README.md has the measurements. Needs PSRAM for the wake
+            word's audio buffers (about 133 KB: the 1 s pre-roll, its
+            snapshot and the backlog of audio heard while the detector
+            catches up).
+
+    choice MUSE_WAKEWORD_SENSITIVITY
+        prompt "Wake word sensitivity"
+        default MUSE_WAKEWORD_SENSITIVITY_DEFAULT
+        depends on MUSE_WAKEWORD_ENABLE
+        help
+            The detector's cutoff on the mean of the model's last five
+            wake probabilities (ww_detector.c): Low 0.26, Default 0.22,
+            High 0.13. Measured on a held-out test set of synthetic
+            speech (text-to-speech voices the model never trained on,
+            in quiet, noise, music, TV and reverberation) and 23.5 hours
+            of real non-wake audio: Low about 0.3 false wakes an hour
+            with 71% of wake words caught, Default about 0.4 an hour and
+            74%, High about 1.4 an hour and 80%. Real voices haven't
+            been measured.
+
+        config MUSE_WAKEWORD_SENSITIVITY_LOW
+            bool "Low (fewest false wakes)"
+
+        config MUSE_WAKEWORD_SENSITIVITY_DEFAULT
+            bool "Default"
+
+        config MUSE_WAKEWORD_SENSITIVITY_HIGH
+            bool "High (easiest to trigger)"
+    endchoice
+
+    choice MUSE_WAKEWORD_VAD
+        prompt "Speech endpointing after a wake"
+        default MUSE_WAKEWORD_VAD_ENERGY
+        depends on MUSE_WAKEWORD_ENABLE
+        help
+            How the end of a hands-free turn is judged. Higher tiers are
+            only offered when their model is integrated and the board's
+            budgets allow them.
+
+        config MUSE_WAKEWORD_VAD_ENERGY
+            bool "Energy (audio level, no model)"
+    endchoice
+
+    config MUSE_WAKEWORD_START_TIMEOUT_MS
+        int "No speech after a wake cancels the turn (ms)"
+        default 2500
+        range 100 10000
+        depends on MUSE_WAKEWORD_ENABLE
+        help
+            The main false-trigger defence: if no speech follows the wake
+            word within this time, the attempt is dropped and no audio
+            leaves the device.
+
+    config MUSE_WAKEWORD_END_SILENCE_MS
+        int "Trailing silence that ends a hands-free turn (ms)"
+        default 700
+        range 100 5000
+        depends on MUSE_WAKEWORD_ENABLE
+
+    config MUSE_WAKEWORD_MAX_CAPTURE_MS
+        int "Longest hands-free turn (ms)"
+        default 15000
+        range 1000 15000
+        depends on MUSE_WAKEWORD_ENABLE
+        help
+            Hard cap even if endpointing never fires. The top of the range
+            is the push-to-talk cap; a longer hands-free turn than a held
+            button could record makes no sense.
+
+endmenu

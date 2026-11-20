@@ -105,6 +105,10 @@ private:
         CallHeard,      // text: what Muse heard in the call
         CallReply,      // text: the last words of Muse's reply in the call
         CallEnded,      // text: why the call ended
+        WakeHeard,      // the wake word was heard; show a prompt
+        WakeTurnStart,  // value: disable generation; open a hands-free turn
+        WakeTurnEnd,    // flag: submit (true) or drop (false) the hands-free turn
+        WakeCancelled,  // an armed wake was cancelled; clear the prompt
         Shutdown,
     };
 
@@ -114,7 +118,8 @@ private:
         char detail[128] = {};
         bool flag = false;
         uint32_t value = 0;  // BleConfirmRequired: session generation;
-                             // BleStateChanged: muse_ble_pairing_state_t
+                             // BleStateChanged: muse_ble_pairing_state_t;
+                             // WakeTurnStart: disable generation
     };
 
     static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
@@ -170,6 +175,18 @@ private:
     std::atomic<bool> _call_working{false};
     std::atomic<bool> _call_end_requested{false};
     std::atomic<bool> _call_task_running{false};
+    // Wake word (Phase 4.2): the wake task (muse_wakeword_glue) owns the
+    // core and runner; the control task owns these flags. _wake_listening
+    // makes the input task keep reading the mic while visible even when
+    // no turn is recording, so the runner hears. _wake_turn_active marks
+    // a turn the wake word opened (its end comes from the core, not a
+    // tap). _wake_seed_gen is the pre-roll seed's generation: the input
+    // task only feeds a seed whose generation matches the open turn.
+    std::atomic<bool> _wake_inited{false};
+    std::atomic<bool> _wake_init_failed{false};
+    std::atomic<bool> _wake_listening{false};
+    std::atomic<bool> _wake_turn_active{false};
+    std::atomic<uint32_t> _wake_seed_gen{0};
     std::atomic<bool> _session_started{false};
     std::atomic<bool> _provisioned{false};
     std::atomic<bool> _refresh_running{false};
@@ -222,9 +239,9 @@ private:
     void updateNetworkState();
 
     bool postControlEvent(const ControlEvent &event);
-    // Non-blocking variant for the call task: a realtime audio task must
-    // never stall on a full queue (captions/views are best-effort; the
-    // CallEnded post still uses postControlEvent).
+    // Non-blocking variant for the call task and the wake task: a
+    // realtime audio task must never stall on a full queue (captions/views
+    // are best-effort; the CallEnded post still uses postControlEvent).
     bool postControlEventNowait(const ControlEvent &event);
     void controlLoop();
     void controlTick(uint32_t tick);
@@ -262,10 +279,23 @@ private:
 
     bool ensureAudioReady();
     void shutdownAudio();
-    void startTurn();
+    void startTurn(bool hands_free = false);
     void endTurn();
     void cancelTurn();
     void closeTurn();
+
+    // ---- Wake word (Phase 4.2) ----
+    // initWakeWord runs once, on first AppVisible (the glue creates the
+    // runner, buffers and wake task; it lives for the app's lifetime).
+    // startWakeListening acquires audio and activates the runner when the
+    // opt-in is on; stopWakeListening deactivates it on hide.
+    // feedWakeSeedIfPending runs on the input task: after beginTurn() it
+    // feeds the pre-roll seed plus the backlog chunks into the session,
+    // so a hands-free note starts up to 1 s before the speech.
+    void initWakeWord();
+    void startWakeListening();
+    void stopWakeListening();
+    void feedWakeSeedIfPending();
 
     // ---- Realtime voice calls (Phase 4.1) ----
     // startCall runs on the control task; callAudio is the dedicated call

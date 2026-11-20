@@ -86,6 +86,9 @@ public:
     void beginTurn();
     // 16 kHz mono speech, in order, from press to release.
     void feedAudio(const int16_t *pcm, size_t frames);
+    // Pre-roll audio recorded before the turn began (wake word): takes
+    // what fits, waiting briefly for room. Returns frames taken.
+    size_t feedSeedAudio(const int16_t *pcm, size_t frames);
     void endTurn();
     // Abandons the turn (tap, or barge-in during the reply).
     void cancelTurn();

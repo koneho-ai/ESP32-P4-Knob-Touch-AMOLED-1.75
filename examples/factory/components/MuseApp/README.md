@@ -108,6 +108,27 @@ possible. No push-to-talk call yet: the UI has no press/release
 events. A call and a voice-note turn never overlap. The ring stays
 empty during a call (there is no phase cap to fill towards).
 
+## Wake word
+
+Saying "Hey Muse" starts the same voice note as tapping to talk
+(Phase 4.2): the on-device detector (`../muse_wakeword`, vendored
+from the SDK — an ExecuTorch microWakeWord model, `hey_muse.pte`)
+hears the phrase, the screen shows "Hey Muse heard / Speak now",
+and speech within 2.5 s opens a hands-free turn whose note starts
+up to 1 s before the speech, so it includes the wake word. The turn
+ends on 700 ms of silence, at 15 s, on a tap (which submits it), or
+when listening is switched off (which drops it unsent). A wake with
+no speech after it sends nothing; a tap while armed cancels the wake.
+
+Opt-in, off by default: the switch is on the settings page (Phase
+4.4), and the choice persists in NVS. Listening only works while
+the Muse app is visible — the launcher releases the app's audio when
+it is hidden, so there is no background listening. While listening
+is on, the app holds the audio service (the mic stays powered and
+other apps' audio is preempted). The detector runs entirely on the
+device; audio leaves only after a detection, as the voice note.
+Tap-to-talk stays primary and works exactly as before.
+
 ## The avatar
 
 The screen shows the SDK's animated avatar face, not the factory
@@ -143,8 +164,12 @@ MuseApp (this component)
                  UI glue
   MuseClient.cpp Adapter over the vendored session core + credential store
   MuseUi.cpp     LVGL avatar face / ring / meter / captions (SDK full layout)
+  muse_wakeword_glue.cpp  Wake-word glue (factory-new): wake task, tap,
+                 pre-roll seed handoff, opt-in (see ../VENDORED.md)
   assets/        Home-screen icon (112x112 ARGB8888, bunny motif)
 ../muse_avatar   Vendored SDK avatar renderer (muse_pixel.c, happy_anim)
+../muse_wakeword Vendored SDK wake-word core + ExecuTorch runner
+                 (muse_wakeword_core, ww_runner_espnn, hey_muse.pte)
 ../muse_session  Vendored SDK session core (Noise + HTTPS + dictation)
                  + realtime voice-call sources (muse_voice_call*)
 ../muse_vm       VM discovery, device-token mint/refresh, NVS store,
@@ -172,7 +197,9 @@ duplicate to stereo → `audio_client_write`.
   defaults to `VOICE_NOTE=1`: each press is uploaded as a WAV voice note
   to `/chat/stream`, not streamed to `/api/voice/dictation`. The
   streaming path exists in the same file behind `VOICE_NOTE=0`.
-- **No wake word.** Turn-based tap-to-talk only (plus calls, above).
+- **Wake word is visible-only and opt-in.** "Hey Muse" works only
+  while the app is on screen and only after the settings-page switch
+  is turned on (see "Wake word" above). No background listening.
 - **Calls are half-duplex, hands-free only.** No echo cancellation, no
   push-to-talk call (see "Realtime voice calls" above).
 - **No Link control session.** The session core's Link hooks are stubbed;

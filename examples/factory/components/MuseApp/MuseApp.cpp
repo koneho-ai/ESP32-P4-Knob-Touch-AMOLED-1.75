@@ -22,6 +22,7 @@
 #include "knob_service.h"
 #include "muse_ble_pairing.h"
 #include "muse_provisioning.h"
+#include "muse_wakeword_glue.h"
 #include "wifi_service.h"
 #include "Settings.hpp"
 #include "esp_heap_caps.h"
@@ -816,6 +817,9 @@ void MuseApp::setState(State state)
     if (previous != state) {
         ESP_UTILS_LOGI("Muse state %s -> %s", stateText(previous), stateText(state));
     }
+    // Own-voice playback suppresses the wake word, so Muse never triggers
+    // on its own reply (the glue clears the pre-roll on the transition).
+    muse_wakeword_set_playback(state == State::Speaking);
 }
 
 void MuseApp::setError(const char *detail)
@@ -1119,6 +1123,11 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         }
         break;
     case ControlEventType::ActionPressed: {
+        // A real press: report it to the wake word core (a press cancels
+        // an armed wake and takes over an open capture). The down/up pair
+        // brackets the whole handler, so a quick tap lands as both edges
+        // on one tick and a press straddling ticks still converts.
+        muse_wakeword_note_ptt(true);
         State state = _state.load();
         switch (state) {
         case State::Ready:
@@ -1169,6 +1178,7 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         default:
             break;
         }
+        muse_wakeword_note_ptt(false);
         break;
     }
     case ControlEventType::TurnHeard:
@@ -1194,6 +1204,7 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
     case ControlEventType::CallEnded: {
         _in_call.store(false);
         _call_working.store(false);
+        muse_wakeword_set_ptt_turn(false);   // the call suppressed the runner
         setChatMessage("", event.text[0] != '\0' ? event.text : "Call ended");
         State state = _state.load();
         if (_visible.load() &&
@@ -1203,6 +1214,48 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         }
         break;
     }
+    case ControlEventType::WakeHeard:
+        setChatMessage("", "Hey Muse heard\nSpeak now");
+        break;
+    case ControlEventType::WakeTurnStart: {
+        // The wake task asked for a hands-free turn. Only open it from
+        // Ready (not mid-turn, mid-call, or while a reply is playing) and
+        // only if listening is still wanted (the user may have switched
+        // it off since the wake was heard). Otherwise close the core's
+        // capture so the next wake is heard.
+        bool wanted = muse_wakeword_turn_wanted(event.value);
+        if (wanted && _state.load() == State::Ready) {
+            _wake_seed_gen.store(muse_wakeword_seed_generation());
+            startTurn(true);
+        }
+        if (!_wake_turn_active.load()) {
+            muse_wakeword_turn_ended();
+        }
+        break;
+    }
+    case ControlEventType::WakeTurnEnd: {
+        // The core ended the capture: submit the turn, or drop it unsent
+        // (silence, timeout, disabled, or an incomplete backlog).
+        // endTurn/cancelTurn tell the core the turn is over.
+        if (_wake_turn_active.load()) {
+            if (event.flag) {
+                endTurn();
+            } else {
+                cancelTurn();
+                if (_state.load() == State::Listening) {
+                    setState(State::Ready);
+                }
+            }
+        }
+        break;
+    }
+    case ControlEventType::WakeCancelled:
+        // An armed wake was cancelled before any turn opened: clear the
+        // prompt, but leave a running turn alone.
+        if (!_wake_turn_active.load() && _state.load() == State::Ready) {
+            clearConversationUi();
+        }
+        break;
     case ControlEventType::TurnReply:
         setChatMessage("assistant", event.text);
         if (_state.load() == State::Thinking) {
@@ -1323,10 +1376,16 @@ void MuseApp::handleAppVisible()
         setState(State::Connecting);
         _client->testConnection();
     }
+    // Last: listening needs the session, the provisioned state and the
+    // network above, so it starts only once those are settled.
+    startWakeListening();
 }
 
 void MuseApp::handleAppHidden(bool release_audio)
 {
+    // Listening stops first: the wake word only works while visible, and
+    // the core closes any open capture when listening goes off.
+    stopWakeListening();
     closeTurn();
     requestCallEnd();
     // Leaving the screen mid-pairing ends pairing: the Muse app can only
@@ -1795,7 +1854,7 @@ void MuseApp::shutdownAudio()
     }
 }
 
-void MuseApp::startTurn()
+void MuseApp::startTurn(bool hands_free)
 {
     if (!_client) {
         return;
@@ -1822,6 +1881,13 @@ void MuseApp::startTurn()
         setError("Audio unavailable");
         return;
     }
+    // A push-to-talk turn suppresses the runner, so the speech being
+    // recorded cannot wake a second turn. A hands-free turn leaves the
+    // runner running (its own capture is already open).
+    if (!hands_free) {
+        muse_wakeword_set_ptt_turn(true);
+    }
+    _wake_turn_active.store(hands_free);
     clearConversationUi();
     _turn_done.store(false);
     _drain_posted.store(false);
@@ -1836,6 +1902,16 @@ void MuseApp::startTurn()
 void MuseApp::endTurn()
 {
     _capture_enabled.store(false);
+    bool was_wake_turn = _wake_turn_active.exchange(false);
+    _wake_seed_gen.store(0);
+    muse_wakeword_set_ptt_turn(false);
+    if (was_wake_turn) {
+        // A turn ended early (a tap, or the app hiding) leaves the core's
+        // capture open: close it so the next wake is heard, and drop a
+        // seed the input task never fed.
+        muse_wakeword_clear_seed();
+        muse_wakeword_turn_ended();
+    }
     if (_client) {
         _client->endTurn();
     }
@@ -1847,6 +1923,13 @@ void MuseApp::cancelTurn()
     _capture_enabled.store(false);
     _playback_enabled.store(false);
     _accept_playback.store(false);
+    bool was_wake_turn = _wake_turn_active.exchange(false);
+    _wake_seed_gen.store(0);
+    muse_wakeword_set_ptt_turn(false);
+    if (was_wake_turn) {
+        muse_wakeword_clear_seed();
+        muse_wakeword_turn_ended();
+    }
     if (_client) {
         _client->cancelTurn();
     }
@@ -1857,6 +1940,129 @@ void MuseApp::closeTurn()
     cancelTurn();
     _turn_done.store(false);
     _drain_posted.store(false);
+}
+
+// ---- Wake word (Phase 4.2) ----
+//
+// The glue (muse_wakeword_glue) owns the runner, core and wake task; this
+// app owns the lifecycle around it: init once, listen while visible and
+// opted in, open hands-free turns from the core's events, and feed the
+// pre-roll seed into the session after beginTurn(). UNTESTED ON HARDWARE.
+
+void MuseApp::initWakeWord()
+{
+    if (_wake_inited.load() || _wake_init_failed.load()) {
+        return;
+    }
+#if CONFIG_MUSE_WAKEWORD_ENABLE
+    MuseWakewordCallbacks callbacks = {};
+    callbacks.onHeard = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeHeard;
+        (void)postControlEventNowait(event);
+    };
+    callbacks.onTurnStart = [this](uint32_t disables) {
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeTurnStart;
+        event.value = disables;
+        return postControlEventNowait(event);
+    };
+    callbacks.onTurnEnd = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeTurnEnd;
+        event.flag = true;
+        return postControlEventNowait(event);
+    };
+    callbacks.onTurnCancel = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeTurnEnd;
+        event.flag = false;
+        return postControlEventNowait(event);
+    };
+    callbacks.onCancelled = [this]() {
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeCancelled;
+        (void)postControlEventNowait(event);
+    };
+    esp_err_t err = muse_wakeword_init(callbacks);
+    if (err != ESP_OK) {
+        _wake_init_failed.store(true);
+        ESP_UTILS_LOGE("Muse wake word init failed: %s", esp_err_to_name(err));
+        return;
+    }
+    _wake_inited.store(true);
+#else
+    _wake_init_failed.store(true);   // not compiled in; don't retry
+#endif
+}
+
+void MuseApp::startWakeListening()
+{
+    initWakeWord();
+    if (!muse_wakeword_enabled()) {
+        return;   // opt-in off: no audio hold, no listening
+    }
+    // Listening holds the audio service while visible (the input task
+    // keeps reading the mic even with no turn open), so it preempts
+    // other apps' audio. Intrinsic to the feature, and opt-in-gated.
+    if (!ensureAudioReady()) {
+        ESP_UTILS_LOGE("Muse wake word: audio unavailable");
+        return;
+    }
+    _wake_listening.store(true);
+    muse_wakeword_set_active(true);
+}
+
+void MuseApp::stopWakeListening()
+{
+    _wake_listening.store(false);
+    muse_wakeword_set_active(false);
+}
+
+void MuseApp::feedWakeSeedIfPending()
+{
+    // Input task only. Called before the first live audio of a turn, so
+    // the note starts with the pre-roll (up to 1 s before the speech)
+    // plus the backlog chunks the input task tapped while the wake task
+    // was catching up — no gap, no repeat.
+    if (!muse_wakeword_seed_ready()) {
+        return;
+    }
+    uint32_t gen = muse_wakeword_seed_generation();
+    if (gen != _wake_seed_gen.load()) {
+        // Stale seed (its turn never started, or a newer turn began):
+        // drop it, never feed old audio into a new turn.
+        muse_wakeword_clear_seed();
+        return;
+    }
+    size_t frames = 0;
+    const int16_t *seed = muse_wakeword_seed_data(&frames);
+    if (seed != nullptr && frames > 0 && _client) {
+        size_t taken = _client->feedSeedAudio(seed, frames);
+        if (taken < frames) {
+            ESP_UTILS_LOGW(
+                "Muse wake seed partial: %u/%u frames",
+                static_cast<unsigned int>(taken), static_cast<unsigned int>(frames)
+            );
+        }
+    }
+    const int16_t *chunks[MUSE_WAKEWORD_BACKLOG_CHUNKS];
+    size_t count = 0;
+    if (muse_wakeword_take_backlog(chunks, MUSE_WAKEWORD_BACKLOG_CHUNKS, &count)) {
+        for (size_t i = 0; i < count; i++) {
+            if (_client) {
+                _client->feedAudio(chunks[i], MUSE_WAKEWORD_CHUNK_FRAMES);
+            }
+        }
+    } else {
+        // The backlog is incomplete: the note can't be continuous, so end
+        // this turn unsent (the SDK drops it the same way).
+        ControlEvent event = {};
+        event.type = ControlEventType::WakeTurnEnd;
+        event.flag = false;
+        (void)postControlEventNowait(event);
+    }
+    muse_wakeword_clear_seed();
 }
 
 // ---- Realtime voice calls (Phase 4.1) ----
@@ -1909,6 +2115,8 @@ void MuseApp::startCall()
         setError("Start call task");
         return;
     }
+    // The call owns the mic and its speech must not wake a second turn.
+    muse_wakeword_set_ptt_turn(true);
     setState(State::CallConnecting);
 #else
     showToastSoon("Calls unavailable");
@@ -2286,7 +2494,12 @@ void MuseApp::inputAudio()
         return;
     }
     while (_audio_tasks_running.load()) {
-        if (!_capture_enabled.load()) {
+        // While listening for the wake word, the input task keeps reading
+        // the mic even with no turn open — the runner hears on the same
+        // reads. During a call the call task owns the mic instead.
+        bool capturing = _capture_enabled.load();
+        bool wake_reading = _wake_listening.load() && !_in_call.load();
+        if (!capturing && !wake_reading) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
@@ -2297,17 +2510,24 @@ void MuseApp::inputAudio()
             continue;
         }
         _input_pcm_peak.store(mixMicToMono(device_stereo, mono24, INPUT_READ_FRAMES));
-        if (_client && _capture_enabled.load()) {
-            uint32_t out_samples = 0;
-            if (esp_ae_rate_cvt_process(
-                    _input_resampler,
-                    reinterpret_cast<esp_ae_sample_t>(mono24),
-                    INPUT_READ_FRAMES,
-                    reinterpret_cast<esp_ae_sample_t>(mono16),
-                    &out_samples
-                ) == ESP_AE_ERR_OK && out_samples > 0 &&
-                    out_samples <= _input_resampler_max_samples) {
+        if (!_client) {
+            continue;
+        }
+        uint32_t out_samples = 0;
+        if (esp_ae_rate_cvt_process(
+                _input_resampler,
+                reinterpret_cast<esp_ae_sample_t>(mono24),
+                INPUT_READ_FRAMES,
+                reinterpret_cast<esp_ae_sample_t>(mono16),
+                &out_samples
+            ) == ESP_AE_ERR_OK && out_samples > 0 &&
+                out_samples <= _input_resampler_max_samples) {
+            if (_capture_enabled.load()) {
+                feedWakeSeedIfPending();
                 _client->feedAudio(mono16, out_samples);
+            }
+            if (_wake_listening.load() && !_in_call.load()) {
+                muse_wakeword_on_audio(mono16, out_samples);
             }
         }
     }

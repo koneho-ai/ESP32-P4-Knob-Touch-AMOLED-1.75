@@ -273,6 +273,97 @@ tile, one caption box for transcript + reply, pet on long-press
 (the SDK's face tap is pet, but here a tap talks), Montserrat 16 for
 the state label (no Unscii in the factory LVGL).
 
+### `components/muse_wakeword/` — "Hey Muse" wake word (Phase 4.2, 2026-11-20)
+
+From `sdk-ref/esp32/components/muse_wakeword/`, verbatim except the
+Kconfig and CMakeLists (see below):
+
+- `muse_wakeword_core.c` / `include/muse_wakeword.h` — the session
+  state machine (IDLE/ARMED/CAPTURING/CAPTURING_PTT), the 1 s pre-roll
+  ring, the numbered-chunk history, the energy fallback. Pure C, no
+  IDF types.
+- `ww_runner_espnn.cpp` / `include/ww_runner.h` — the ExecuTorch
+  runner (microfrontend + `models/hey_muse.pte` through the ESP-NN
+  delegate + `ww_detector.c`). Zero target-specific code; the P4 is
+  covered by ExecuTorch's nightly CI (build-only upstream — the
+  runtime on P4 is unproven until hardware exists).
+- `ww_frontend.c` / `ww_detector.c` (+ headers), `ww_model.h`,
+  `models/hey_muse.pte` (23,492 bytes, int8 microWakeWord streaming
+  MixedNet, phrase "Hey Muse" only — 73.9% caught, 0.38 false
+  wakes/hour at the Default cutoff 0.22, measured by the SDK on
+  synthetic speech), `models/hey_muse.json`, `models/README.md`,
+  `models/ATTRIBUTION.md`, `README.md`, `hey_muse_pte.S.in` (the
+  model is embedded 16-aligned in flash; `EMBED_FILES` has no
+  alignment directive and ExecuTorch `Program::load` requires
+  aligned program data), `idf_component.yml` (verbatim: registry
+  deps `pytorch/executorch ==1.6.0-dev.20261112`,
+  `espressif/esp-nn ==1.5.0`, `esphome/esp-micro-speech-features
+  ==1.2.3`, gated on `CONFIG{MUSE_WAKEWORD_EXECUTORCH}`).
+- Kconfig adapted: the menu depends on `MUSE_APP_ENABLED` (the
+  factory equivalent of the SDK's `MUSE_ENABLED`); the FreeInk
+  exclusion is dropped (no e-paper UI here). Sensitivity stays a
+  choice (Low/Default/High); the timeouts stay Kconfig ints.
+- CMakeLists adapted: same sources and the same aligned `.pte`
+  embed; `executorch_add_backend(EspNNBackend)` (the model runs
+  entirely in the delegate, so no kernel bundle and no executorch
+  Python at build time); `-ffp-contract=off` on `ww_frontend.c`;
+  `cxx_std_17` like `muse_session`. With `MUSE_WAKEWORD_ENABLE=n`
+  the component registers empty (no sources, no include dirs) and
+  the registry deps are not downloaded.
+
+The glue is factory-new (`components/MuseApp/muse_wakeword_glue.h` /
+`.cpp`), modeled on the SDK's `components/muse/muse_wakeword_glue.c`,
+which cannot be ported as-is (it drives the SDK's `muse_voice` /
+`muse_input` / `muse_state` tasks, none of which exist here). Same
+shape: a single wake task (8 KB PSRAM stack, prio 5, core 0), a
+320-frame tap stream buffer (25 chunks), a 1 s pre-roll ring, a
+32-slot numbered-chunk history, the same core tick / apply-requests /
+ARMED wall-clock timeout / tap-gap handling, the same disable
+generation (`muse_wakeword_turn_wanted`). Factory seams, each
+documented in the glue header: turns open through callbacks that post
+MuseApp control events; the pre-roll seed is fed by the input task
+after `beginTurn()` (the session resets its mic buffer at turn start,
+so a seed fed earlier would be discarded) via
+`MuseClient::feedSeedAudio` (`muse_hatch_turn_audio_wait`, 100 ms);
+listening is gated on app visibility in addition to the opt-in; the
+tap accumulates the resampler's variable frame counts into exact
+320-frame chunks.
+
+Behavior (all from the SDK core, unchanged): a wake arms the core
+("Hey Muse heard / Speak now"); speech within 2.5 s opens a
+hands-free turn whose note starts with the pre-roll (up to 1 s before
+the speech, so it includes the wake word) plus the backlog chunks the
+input task tapped while the wake task caught up — no gap, no repeat.
+The turn ends on 700 ms of trailing silence, at the 15 s cap, on a
+tap (which submits it), or when listening is switched off (which
+drops it unsent). A wake with no speech sends nothing. A tap while
+armed cancels the wake. Own-voice playback and push-to-talk turns
+suppress the runner; a call suppresses it too (the call task owns
+the mic then). The opt-in persists in NVS namespace `muse_ww`, key
+`enabled`, and defaults OFF — flashing never starts listening on its
+own. The switch lives on the MuseApp settings page (Phase 4.4); until
+then the opt-in can only be on if it was saved on.
+
+Limits, intrinsic to the feature (not port gaps):
+
+- **Visible-only, absolute.** The wake word works only while MuseApp
+  is on screen: the Brookesia launcher runs at most 3 apps and the
+  app's audio is released when it is hidden. There is no background
+  listening.
+- **Audio hold.** Listening holds the audio service while visible
+  (the input task keeps reading the mic even with no turn open), so
+  it preempts other apps' audio and keeps the mic/codecs powered.
+  Opt-in-gated; documented in the Kconfig help too.
+- **WakeNet is not a fallback.** No "Hey Muse" model exists among
+  esp-sr's shipped models; a custom model needs Espressif paid
+  training (≥20,000 utterances) or a free TTS request (weeks–months).
+  A different phrase would be a product decision, not engineering.
+- **Runtime on P4 unproven.** The runner is build-proven upstream
+  and compiles here; the first on-device run is the proof. The
+  SDK's S3 measurements (~2.5 ms CPU per 30 ms, 14 KB internal RAM,
+  29 KB PSRAM runner, ~133 KB PSRAM audio buffers) are the only
+  numbers until then.
+
 ### `components/muse_vm/` — VM account + credential store (slimmed)
 
 From `sdk-ref/esp32/main/`, slimmed to what the app needs:
@@ -363,7 +454,6 @@ cache; they leave the device only in the `Authorization` header of
 
 ## Not vendored (deliberate omissions)
 
-- Wake word (`muse_wakeword`, WakeNet) — v1 is tap-to-talk only.
 - Spoken replies / TTS — see "Replies are text-only" above.
 - Software echo cancellation (`muse_aec.c`) — no playback reference on
   this board; calls are half-duplex (see "Realtime voice calls" above).
@@ -403,10 +493,12 @@ saved, 19% of the 14 MiB app partition free.
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xb76310 bytes (12,018,448) against a 0xe00000 (14 MiB) app partition —
-18.1% free, after the USB Screen removal, the avatar port and the
-Phase 4.1 realtime calls (was 0xb6bc50 / 11,975,760, 18% free, after
-the avatar port; the calls added 42,688 bytes); DIRAM 267,346 /
+0xb9a9e0 bytes (12,167,648) against a 0xe00000 (14 MiB) app partition —
+17% free, after the USB Screen removal, the avatar port, the Phase 4.1
+realtime calls and the Phase 4.2 wake word (was 0xb76310 / 12,018,448,
+18.1% free, after the calls; the wake word added 149,200 bytes —
+ExecuTorch + esp-nn + micro-speech features + the 23,492-byte model +
+glue); DIRAM 267,346 /
 655,360 (40.79%) at Phases 0-3. Build #10 notes: the `muse_avatar`
 component's `file(GLOB ... CONFIGURE_DEPENDS ...)` failed configure —
 ESP-IDF includes component CMakeLists in script mode while gathering
@@ -420,7 +512,12 @@ manually and re-run. `nm` on the build #10 ELF confirms
 the build #11 ELF confirms the call core is linked in
 (`muse_voice_call_poll`, `muse_voice_call_audio`/`read`,
 `muse_vc_gate_init`/`mic_open`/`flush`, `muse_voice_call_device_id`)
-and `MuseApp::callAudio` (2,568 B). Items marked RESOLVED were
+and `MuseApp::callAudio` (2,568 B). `nm` on the build #12 ELF confirms
+the wake word is linked in: the embedded model
+(`_binary_hey_muse_pte_start`/`_end`, exactly 23,492 bytes),
+`muse_wakeword_core_tick` (480 B), `ww_runner_create` (2,060 B),
+`ww_detector_push`, and the glue (`muse_wakeword_set_active`,
+`set_playback`, `set_ptt_turn`, `seed_generation`, `turn_ended`). Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 
