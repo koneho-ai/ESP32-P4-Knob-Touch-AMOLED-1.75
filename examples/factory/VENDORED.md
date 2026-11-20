@@ -86,6 +86,10 @@ the stub pattern). Copied verbatim:
   `muse_options.c` / `muse_options.h`, `muse_options_json.c`,
   `muse_account_api.c` / `muse_account_api.h`, `muse_mem.h`
 - `test_reply.mp3` (22,125 bytes, embedded for the MP3 self-test)
+- Realtime voice calls (Phase 4.1, 2026-11-20): `muse_voice_call.cpp`
+  (1,577 lines), `muse_voice_call_core.c` (1,886) + `.h` (511),
+  `muse_voice_call.h` (139), `muse_voice_call_priv.h` (66) — 4,179
+  lines, verbatim. `muse_aec.c` deliberately NOT vendored (see below).
 
 New / rewritten for the factory firmware:
 
@@ -101,13 +105,17 @@ New / rewritten for the factory firmware:
   `muse_state.h` (only `muse_state_page`, plus the `muse_mode_t` enum —
   the avatar renderer includes this header for it, so the enum lives
   here as the single copy).
-- `Kconfig` — the five `CONFIG_MUSE_*` symbols the vendored sources
-  read: `MUSE_HATCH_COMPACT_BUFFERS` (n), `MUSE_REALTIME_VOICE` (n),
-  `MUSE_REALTIME_VOICE_APP_ID` ("hatch-web"), `MUSE_BOARD_SENSECAP_WATCHER`
+- `Kconfig` — the `CONFIG_MUSE_*` symbols the vendored sources
+  read: `MUSE_HATCH_COMPACT_BUFFERS` (n), `MUSE_REALTIME_VOICE` (y in
+  `sdkconfig.defaults` since Phase 4.1), `MUSE_REALTIME_VOICE_APP_ID`
+  ("hatch-web"), `MUSE_REALTIME_VOICE_IDLE_S` (45),
+  `MUSE_REALTIME_VOICE_MAX_S` (900), `MUSE_REALTIME_VOICE_GREETING`
+  (n), `MUSE_APP_VIEW` (hidden, n), `MUSE_BOARD_SENSECAP_WATCHER`
   (n), `MUSE_LATEST_REPLY` (n).
 - `CMakeLists.txt` — `SRCS` incl. the glue, `EMBED_FILES test_reply.mp3`,
   `PRIV_REQUIRES` incl. `muse_noise_core`, `muse_vm`, `minimp3`, cJSON,
-  esp_http_client, esp-tls, mbedtls. C++17.
+  esp_http_client, esp-tls, mbedtls. C++17. The call sources join `SRCS`
+  under `if(CONFIG_MUSE_REALTIME_VOICE)` (the SDK's own pattern).
 - `idf_component.yml` — `espressif/cjson ^1.7.19`.
 
 Stripped (not vendored): `muse_audio.c` (board audio — the factory
@@ -116,7 +124,7 @@ full layout; the avatar renderer itself IS vendored — see
 `muse_avatar` below), `app.c` orchestration, `ble_server.c` /
 `link_pairing.c` (BLE pairing is a separate component, `MuseBlePairing`),
 `noise_control.cpp` / tunnel, `image_fetch`, OTA, Opus,
-`muse_voice_call` realtime sources, `muse_wakeword`.
+`muse_aec.c` (see "Realtime voice calls" below), `muse_wakeword`.
 
 One deliberate boundary crossing: `MuseClient::stop()` includes
 `muse_chat_priv.h` to call `muse_hatch_chat_forget()` (drop the Noise
@@ -163,6 +171,55 @@ Other session facts the app relies on:
 - `post()` blocks up to 100 ms on a full queue: never call session
   functions from the audio preempt callback; set flags and post a
   control event instead.
+
+#### Realtime voice calls (Phase 4.1, 2026-11-20)
+
+`POST /voice/realtime` over the voice session's Noise connection,
+NDJSON both ways, 40 ms appends of 24 kHz PCM16LE base64 up,
+`continuous_audio_video.delta` audio down; every exit sends
+`POST /voice/end-call` (an unconfirmed end-call is kept as one pending
+cleanup in RAM and retried on reconnect, up to 3 tries / 10 minutes).
+The vendored `muse_chat_session.cpp` already contained every call hook
+— no change to that file was needed. The app side is new factory code:
+`MuseClient` wraps the call API, and `MuseApp::callAudio` is a
+dedicated call task (the SDK's `run_call`, hands-free only) that pumps
+one 10 ms pass per loop — read mic, drain call events, feed gated mic
+audio, read reply audio, write it — using the same audio client and
+resamplers as the turn tasks, which idle during a call. A call reuses
+the Listening/Thinking/Speaking states with an `_in_call` flag (tap
+hangs up in a call; `CallConnecting` covers setup), and the WORKING
+pose (`pose.working`, `MuseUi::setWorking`) shows when Muse still has
+a caller turn open. A turn and a call must never overlap — the session
+has no guard, so the app enforces it (`startTurn` refuses in a call;
+`startCall` closes any turn first). `muse_voice_call_device_id()` is
+provided by `MuseClient.cpp`, returning `muse_vm_node_id()` (RAM-cached,
+safe on the session task). No PTT call yet: the UI has no press/release
+events.
+
+- **Half-duplex, no AEC.** `muse_aec.c` needs mic + the exact
+  just-played samples paired once per 20 ms pass on a single task, plus
+  a fixed bench-measured reference delay. This board has neither: mic
+  and speaker live on separate unsynchronised tasks, the playback
+  reference delay is unknown and variable (no hardware loopback, no
+  board to measure on), Xiaozhi's own code already concluded "the
+  full-duplex one needs a playback reference this board does not have",
+  and the SDK's `MUSE_VOICE_SOFTWARE_AEC` depends on
+  `IDF_TARGET_ESP32S3`. So the SDK's standard mic gate applies
+  (`muse_vc_gate_t`): the mic stays shut while Muse is audibly talking
+  plus a 300 ms tail, with a 120 ms speaker-lag estimate — an SDK board
+  value that may need retuning for this audio-service path once
+  hardware exists. AEC stays a future experiment (single duplex task,
+  bench-measured delay, esp-sr 2.4.7-vs-2.5.2 decision).
+- **app_id side effect.** With `MUSE_REALTIME_VOICE` on, the session
+  connects with `app_id=hatch-web` for EVERYTHING on that connection —
+  calls, voice notes and typed turns included. Inherent to the feature,
+  not optional; the VM refuses calls without one.
+- **Server side unverified.** The VM must accept calls from the
+  gadget's credentials; no board exists to test against. Greeting off
+  (SDK default); idle hang-up 45 s, max call 900 s (SDK defaults).
+- **Call buffers** are PSRAM-resident by design (~700 KB: 192 KB in,
+  128 KB out, 2×160 KB PTT rings, 32 KB line buffer, ~24 KB decode,
+  ~17 KB reply gate, ~8 KB turn table) — comfortable on 32 MB PSRAM.
 
 ### `components/muse_avatar/` — the Muse character (2026-11-20)
 
@@ -306,10 +363,10 @@ cache; they leave the device only in the `Authorization` header of
 
 ## Not vendored (deliberate omissions)
 
-- Realtime voice calls (`muse_voice_call`, `CONFIG_MUSE_REALTIME_VOICE`
-  sources) — Phase 4.
 - Wake word (`muse_wakeword`, WakeNet) — v1 is tap-to-talk only.
 - Spoken replies / TTS — see "Replies are text-only" above.
+- Software echo cancellation (`muse_aec.c`) — no playback reference on
+  this board; calls are half-duplex (see "Realtime voice calls" above).
 - Link control session (`muse_link` ops beyond the two stubs) — the
   factory firmware has no Link; own-token path only.
 - OTA, Opus, `image_fetch`, `noise_control`/tunnel, `muse_ui.c`
@@ -346,20 +403,24 @@ saved, 19% of the 14 MiB app partition free.
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xb6bc50 bytes (11,975,760) against a 0xe00000 (14 MiB) app partition —
-18% free, after the USB Screen removal and the avatar port (was
-0xb77d00 / 12,025,088, 18% free, at Phases 0-3; the USB removal saved
-73,584 bytes, the avatar port added 24,256); DIRAM 267,346 / 655,360
-(40.79%) at Phases 0-3. Build #10 notes: the `muse_avatar` component's
-`file(GLOB ... CONFIGURE_DEPENDS ...)` failed configure — ESP-IDF
-includes component CMakeLists in script mode while gathering
+0xb76310 bytes (12,018,448) against a 0xe00000 (14 MiB) app partition —
+18.1% free, after the USB Screen removal, the avatar port and the
+Phase 4.1 realtime calls (was 0xb6bc50 / 11,975,760, 18% free, after
+the avatar port; the calls added 42,688 bytes); DIRAM 267,346 /
+655,360 (40.79%) at Phases 0-3. Build #10 notes: the `muse_avatar`
+component's `file(GLOB ... CONFIGURE_DEPENDS ...)` failed configure —
+ESP-IDF includes component CMakeLists in script mode while gathering
 requirements, where that flag is invalid (dropped it); and a failed
 configure leaves `build/` in a state `idf.py` refuses to fullclean
 ("doesn't seem to be a CMake build directory") — delete `build/`
 manually and re-run. `nm` on the build #10 ELF confirms
 `happy_anim_frames` is absent (GC'd, ~242 KB) while
 `muse_pixel_render` (15,626 B), `muse_pixel_scale`,
-`muse_pixel_set_size` and `muse_pixel_accent` are linked in. Items marked RESOLVED were
+`muse_pixel_set_size` and `muse_pixel_accent` are linked in. `nm` on
+the build #11 ELF confirms the call core is linked in
+(`muse_voice_call_poll`, `muse_voice_call_audio`/`read`,
+`muse_vc_gate_init`/`mic_open`/`flush`, `muse_voice_call_device_id`)
+and `MuseApp::callAudio` (2,568 B). Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 

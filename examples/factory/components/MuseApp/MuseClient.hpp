@@ -14,6 +14,7 @@
 #include "esp_err.h"
 #include "muse_chat.h"
 #include "muse_credentials.h"
+#include "muse_voice_call.h"
 
 namespace esp_brookesia::apps {
 
@@ -35,6 +36,11 @@ namespace esp_brookesia::apps {
  * text ("Muse doesn't speak gadget replies" — a TTS API of your own would
  * plug in there). readReply() still returns the paced silence, which the
  * app plays so the captions advance at reading pace.
+ *
+ * Realtime calls (Phase 4.1) are different: Muse's speech arrives as real
+ * 16 kHz audio over POST /voice/realtime, and the call task (MuseApp)
+ * pumps it. Half-duplex on this board — the mic stays shut while Muse is
+ * audibly talking, plus a 300 ms tail (see VENDORED.md).
  *
  * UNTESTED ON HARDWARE — no board exists yet; compile verification only.
  */
@@ -104,6 +110,26 @@ public:
     // 0..1 (1 = this message has drained; the ring caps at 99% until the
     // whole turn succeeds). Call from the control task, like captionAt.
     float turnProgress(size_t played);
+
+    // ---- Realtime voice calls (Phase 4.1; CONFIG_MUSE_REALTIME_VOICE) ----
+    // Hands-free only: a tap starts a call, the next press ends it. All
+    // audio is 16 kHz mono; the call resamples to/from the wire's 24 kHz.
+    // start/end/audio/read/event MUST all run on one task — the app's call
+    // task (see MuseApp::callAudio) — the call core keeps plain non-atomic
+    // state and a press fence that assume a single reader. With the option
+    // off these are safe no-ops (callReady() false, reads return 0).
+    bool callReady() const;
+    void startCall();
+    void endCall();
+    // Mic audio for the call, as captured. False if dropped.
+    bool feedCallAudio(const int16_t *pcm, size_t frames);
+    // Muse's speech, without waiting. *flushed: the caller barged in;
+    // drop whatever is buffered downstream too.
+    size_t readCallAudio(int16_t *pcm, size_t frames, bool *flushed);
+    // Non-blocking event drain; events of earlier calls are dropped.
+    muse_voice_call_ev_t pollCallEvent(char *text, size_t cap);
+    // Live, and Muse still has a caller turn open — drives the WORKING pose.
+    bool callWorking() const;
 
     // Refreshes the device-token pair via the account API (access leg, then
     // refresh leg) and stores the new pair. Blocking HTTPS: call from a task

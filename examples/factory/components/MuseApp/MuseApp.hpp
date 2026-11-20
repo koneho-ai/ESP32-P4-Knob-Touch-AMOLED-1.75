@@ -30,7 +30,9 @@ namespace esp_brookesia::apps {
  *
  * Turn-based push-to-talk over the vendored Muse chat session (muse_session):
  * tap to talk, tap again to send; the reply shows as text at reading pace
- * (v1 has no spoken replies — see MuseClient). No wake word in v1.
+ * (v1 has no spoken replies — see MuseClient). A long press anywhere but
+ * the avatar starts a realtime voice call instead (Phase 4.1): hands-free,
+ * half-duplex, Muse's speech played live; tap hangs up. No wake word yet.
  *
  * Lifecycle: the session starts lazily on the first AppVisible (the app
  * costs nothing until opened), disconnects on AppHidden, and releases the
@@ -66,6 +68,18 @@ private:
         Thinking,
         Speaking,
         Error,
+        CallConnecting, // A call is setting up, before READY
+    };
+
+    // The call task's view of a live call (SDK run_call's call_view):
+    // Working is Thinking with the avatar's working variant.
+    enum class CallView : uint8_t {
+        Connecting,
+        Listening,
+        Thinking,
+        Speaking,
+        Working,
+        Ending,         // Hanging up; the state stays until CallEnded
     };
 
     enum class ControlEventType : uint8_t {
@@ -73,6 +87,7 @@ private:
         AppHidden,
         NetworkChanged,
         ActionPressed,
+        HoldPressed,    // Long press outside the avatar: start/hang up a call
         TurnHeard,
         TurnReply,
         TurnDone,
@@ -86,6 +101,10 @@ private:
         TokenRefreshFailed,
         BleConfirmRequired,
         BleStateChanged,
+        CallViewChanged, // value: CallView
+        CallHeard,      // text: what Muse heard in the call
+        CallReply,      // text: the last words of Muse's reply in the call
+        CallEnded,      // text: why the call ended
         Shutdown,
     };
 
@@ -101,6 +120,7 @@ private:
     static constexpr int CONTROL_TASK_STACK_SIZE = 12 * 1024;
     static constexpr int INPUT_TASK_STACK_SIZE = 8 * 1024;
     static constexpr int PLAYBACK_TASK_STACK_SIZE = 16 * 1024;
+    static constexpr int CALL_TASK_STACK_SIZE = 16 * 1024;
     static constexpr int REFRESH_TASK_STACK_SIZE = 8 * 1024;
 
     static MuseApp *_instance;
@@ -118,6 +138,7 @@ private:
     TaskHandle_t _control_task = nullptr;
     TaskHandle_t _input_task = nullptr;
     TaskHandle_t _playback_task = nullptr;
+    TaskHandle_t _call_task = nullptr;
     TaskHandle_t _refresh_task = nullptr;
 
     esp_event_handler_instance_t _ip_event_instance = nullptr;
@@ -140,6 +161,15 @@ private:
     std::atomic<bool> _accept_playback{false};
     std::atomic<bool> _turn_done{false};
     std::atomic<bool> _drain_posted{false};
+    // Realtime call (Phase 4.1): the call task owns the call API (start /
+    // audio / read / event must all run on one task). The control task only
+    // sets _call_end_requested; the call task hangs up itself and posts
+    // CallEnded. _in_call distinguishes call Listening/Thinking/Speaking
+    // from turn Listening/Thinking/Speaking (tap hangs up in a call).
+    std::atomic<bool> _in_call{false};
+    std::atomic<bool> _call_working{false};
+    std::atomic<bool> _call_end_requested{false};
+    std::atomic<bool> _call_task_running{false};
     std::atomic<bool> _session_started{false};
     std::atomic<bool> _provisioned{false};
     std::atomic<bool> _refresh_running{false};
@@ -192,6 +222,10 @@ private:
     void updateNetworkState();
 
     bool postControlEvent(const ControlEvent &event);
+    // Non-blocking variant for the call task: a realtime audio task must
+    // never stall on a full queue (captions/views are best-effort; the
+    // CallEnded post still uses postControlEvent).
+    bool postControlEventNowait(const ControlEvent &event);
     void controlLoop();
     void controlTick(uint32_t tick);
     void pollSessionStatus();
@@ -233,6 +267,19 @@ private:
     void cancelTurn();
     void closeTurn();
 
+    // ---- Realtime voice calls (Phase 4.1) ----
+    // startCall runs on the control task; callAudio is the dedicated call
+    // task (the SDK's run_call): one 10 ms pass reads the mic, drains call
+    // events, feeds gated mic audio, reads reply audio and writes it. It
+    // uses the same audio client and resamplers as the turn tasks, which
+    // idle during a call (_capture_enabled/_playback_enabled are false),
+    // so the resamplers are never shared. requestCallEnd is safe from any
+    // task; shutdownAudio requests it and waits for the call task too.
+    void startCall();
+    void requestCallEnd();
+    void callAudio();
+    void handleCallView(CallView view);
+
     void inputAudio();
     void playAudio();
 
@@ -241,6 +288,7 @@ private:
     static void controlTaskEntry(void *arg);
     static void inputTaskEntry(void *arg);
     static void playbackTaskEntry(void *arg);
+    static void callTaskEntry(void *arg);
     static void refreshTaskEntry(void *arg);
     static void ipEventHandler(
         void *arg,
@@ -250,6 +298,7 @@ private:
     );
     static void uiTimerCallback(lv_timer_t *timer);
     static void uiActionCallback(void *context);
+    static void uiHoldCallback(void *context);
     static void audioPreemptCallback(audio_client_handle_t client, void *user_ctx);
     static void knobCallback(int steps, void *user_ctx);
     static MuseUi::Mode uiMode(State state);

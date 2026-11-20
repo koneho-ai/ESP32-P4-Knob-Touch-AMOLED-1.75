@@ -4,16 +4,23 @@
 # component): the chat session plus its text/options helpers, with the
 # factory glue (muse_factory_glue.c) standing in for the Muse settings,
 # Wi-Fi and Link hooks the way the SDK's voice_muse_chat.c does.
+set(srcs
+    "muse_chat.c"
+    "muse_account_api.c"
+    "muse_chat_session.cpp"
+    "muse_chat_text.c"
+    "muse_text.c"
+    "muse_options.c"
+    "muse_options_json.c"
+    "muse_factory_glue.c"
+)
+if(CONFIG_MUSE_REALTIME_VOICE)
+    # Phase 4.1: realtime voice calls (no AEC — see VENDORED.md).
+    list(APPEND srcs "muse_voice_call.cpp" "muse_voice_call_core.c")
+endif()
+
 idf_component_register(
-    SRCS
-        "muse_chat.c"
-        "muse_account_api.c"
-        "muse_chat_session.cpp"
-        "muse_chat_text.c"
-        "muse_text.c"
-        "muse_options.c"
-        "muse_options_json.c"
-        "muse_factory_glue.c"
+    SRCS ${srcs}
     INCLUDE_DIRS "."
     EMBED_FILES "test_reply.mp3"
     PRIV_REQUIRES

@@ -11,14 +11,47 @@ menu "Muse chat session"
         bool "Live voice calls with Muse (POST /voice/realtime)"
         default n
         help
-            Adds realtime voice calls beside voice notes. Phase 4 work:
-            the voice-call sources are NOT vendored, so turning this on
-            will fail the build until they are.
+            Adds realtime voice calls beside voice notes (Phase 4.1:
+            muse_voice_call_core.c/.h, muse_voice_call.cpp/.h and
+            muse_voice_call_priv.h are vendored). With this on, the
+            voice session connects with app_id (hatch-web by default)
+            for EVERYTHING on that connection — calls, voice notes
+            and typed turns included. Half-duplex only on this board:
+            the mic stays shut while Muse is audibly talking, plus a
+            300 ms tail (see VENDORED.md — no AEC reference exists).
 
     config MUSE_REALTIME_VOICE_APP_ID
         string "App id the realtime call connects with"
         default "hatch-web"
         depends on MUSE_REALTIME_VOICE
+
+    config MUSE_REALTIME_VOICE_IDLE_S
+        int "Hang up after this many quiet seconds"
+        range 15 1800
+        default 45
+        depends on MUSE_REALTIME_VOICE
+        help
+            Nothing said and nothing audible from Muse for this long ends
+            the call. The server may enforce a shorter idle limit.
+
+    config MUSE_REALTIME_VOICE_MAX_S
+        int "Longest call, in seconds"
+        range 60 7200
+        default 900
+        depends on MUSE_REALTIME_VOICE
+
+    config MUSE_REALTIME_VOICE_GREETING
+        bool "Muse says hello when a call starts"
+        default n
+        depends on MUSE_REALTIME_VOICE
+
+    config MUSE_APP_VIEW
+        bool
+        default n
+        help
+            Internal: the vendored voice-call sources test this symbol
+            to decide whether to preempt a full-UI app view. Always off
+            on the knob board (Brookesia owns the app lifecycle).
 
     config MUSE_BOARD_SENSECAP_WATCHER
         bool

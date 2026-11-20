@@ -33,13 +33,15 @@ namespace esp_brookesia::apps {
  *
  * Talk is tap-anywhere (the whole page is the button, on SHORT_CLICKED so
  * a long press doesn't talk); a long press on the avatar pets it (the SDK's
- * happy reaction, 1.6 s). Deliberate deviations from the SDK: no volume
- * swipe (the knob is the volume control), no speaker/mute button, no
- * settings or latest-reply tile (the Brookesia launcher owns navigation),
- * and one caption box for both the user transcript and the reply page
- * (the SDK has a separate live-caption line; the two boxes would overlap
- * here). The state label uses Montserrat 16 — the factory LVGL has no
- * Unscii, which the SDK uses.
+ * happy reaction, 1.6 s). A long press anywhere else starts a realtime
+ * voice call (Phase 4.1) via the hold callback — the SDK's tap/hold split
+ * inverted, so tap-to-talk stays the primary path. Deliberate deviations
+ * from the SDK: no volume swipe (the knob is the volume control), no
+ * speaker/mute button, no settings or latest-reply tile (the Brookesia
+ * launcher owns navigation), and one caption box for both the user
+ * transcript and the reply page (the SDK has a separate live-caption line;
+ * the two boxes would overlap here). The state label uses Montserrat 16 —
+ * the factory LVGL has no Unscii, which the SDK uses.
  *
  * The caption box's geometry is the page the session core pages to
  * (muse_state_page in muse_session: 26 columns, 3 lines), and its pixel
@@ -86,13 +88,18 @@ public:
     bool create(
         lv_obj_t *parent,
         ActionCallback action_callback,
-        void *action_context
+        void *action_context,
+        ActionCallback hold_callback = nullptr,
+        void *hold_context = nullptr
     );
     void destroy();
 
     void setNetworkReady(bool ready);
     void setStatus(const char *status);
     void setMode(Mode mode);
+    /* A call's Muse is busy on work it was asked for: the thinking avatar's
+     * working variant (types on a little keyboard). Only read in THINKING. */
+    void setWorking(bool working);
     /* Loudness of the voice heard or spoken, 0 to 1 */
     void setLevel(float level);
     /* Phase progress, 0 to 1: recording length while listening, reply
@@ -159,6 +166,7 @@ private:
 
     static void tickCallback(lv_timer_t *timer);
     static void rootEventCallback(lv_event_t *event);
+    static void rootHoldCallback(lv_event_t *event);
     static void avatarEventCallback(lv_event_t *event);
     static void moveAnimCallback(void *var, int32_t t);
 
@@ -173,11 +181,14 @@ private:
 
     ActionCallback _action_callback = nullptr;
     void *_action_context = nullptr;
+    ActionCallback _hold_callback = nullptr;
+    void *_hold_context = nullptr;
     const lv_font_t *_text_font = nullptr;
 
     Mode _mode = Mode::Offline;
     muse_mode_t _avatar_mode = MUSE_MODE_IDLE;
     bool _mode_valid = false;
+    bool _working = false;
 
     float _level_target = 0;
     float _level_smooth = 0;

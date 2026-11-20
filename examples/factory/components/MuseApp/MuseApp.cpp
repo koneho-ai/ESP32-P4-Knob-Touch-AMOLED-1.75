@@ -17,6 +17,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_audio_types.h"
+#include "esp_timer.h"
 #include "identity.h"
 #include "knob_service.h"
 #include "muse_ble_pairing.h"
@@ -27,6 +28,9 @@
 #include "esp_netif.h"
 #include "freertos/idf_additions.h"
 #include "sdkconfig.h"
+#if CONFIG_MUSE_REALTIME_VOICE
+#include "muse_voice_call_core.h"   // muse_vc_gate_t, the half-duplex mic gate
+#endif
 #ifdef ESP_UTILS_LOG_TAG
 #undef ESP_UTILS_LOG_TAG
 #endif
@@ -53,6 +57,16 @@ constexpr size_t DEVICE_MIC1_SLOT = 0;
 constexpr size_t DEVICE_MIC2_SLOT = 1;
 constexpr size_t INPUT_READ_FRAMES = DEVICE_AUDIO_SAMPLE_RATE / 100;   // 10 ms
 constexpr size_t REPLY_READ_FRAMES = CHAT_SAMPLE_RATE / 50;            // 20 ms
+// A call pumps in 10 ms passes like the capture task (the SDK uses 20 ms;
+// the call core accepts any chunk size and accumulates 40 ms wire frames).
+constexpr size_t CALL_CHUNK_FRAMES = CHAT_SAMPLE_RATE / 100;           // 10 ms
+// Half-duplex gate (SDK muse_voice.c): the mic stays shut while Muse is
+// audibly talking plus this tail; the speaker lag is the SDK board value —
+// it may need retuning for this audio-service path once hardware exists.
+constexpr int64_t CALL_SPEAKER_LAG_US = 120000;
+constexpr int64_t CALL_TAIL_US = 300000;
+constexpr int64_t CALL_END_WAIT_US = 20LL * 1000000;   // Hung up: wait this long for ENDED
+constexpr int64_t CALL_DRAIN_US = 2LL * 1000000;       // Drain queued reply audio after ENDED
 constexpr uint32_t OFFLINE_JUMP_MS = 1500;     // How long "No network" shows before Settings opens
 constexpr int VOLUME_STEP = 5;
 constexpr float VOICE_FULL_SCALE = 9000.0f;    // A peak this loud fills the ring
@@ -62,6 +76,33 @@ void copyString(char *destination, size_t capacity, const char *source)
     if (destination && capacity > 0) {
         snprintf(destination, capacity, "%s", source ? source : "");
     }
+}
+
+// Mixes the two ES7210 microphones to mono (or picks one, per Kconfig) and
+// returns the peak magnitude. Shared by the capture task and the call task.
+int32_t mixMicToMono(const int16_t *device_stereo, int16_t *mono, size_t frames)
+{
+    int32_t peak = 0;
+    for (size_t i = 0; i < frames; i++) {
+        const int16_t mic1 =
+            device_stereo[i * DEVICE_TDM_CHANNELS + DEVICE_MIC1_SLOT];
+        const int16_t mic2 =
+            device_stereo[i * DEVICE_TDM_CHANNELS + DEVICE_MIC2_SLOT];
+#if defined(CONFIG_MUSE_APP_CAPTURE_MIC_1)
+        const int16_t sample = mic1;
+#elif defined(CONFIG_MUSE_APP_CAPTURE_MIC_2)
+        const int16_t sample = mic2;
+#else
+        const int16_t sample =
+            static_cast<int16_t>(((int32_t)mic1 + (int32_t)mic2) / 2);
+#endif
+        mono[i] = sample;
+        const int32_t magnitude = sample < 0 ? -(int32_t)sample : (int32_t)sample;
+        if (magnitude > peak) {
+            peak = magnitude;
+        }
+    }
+    return peak;
 }
 
 BaseType_t createMuseTask(
@@ -555,7 +596,7 @@ void MuseApp::createUi()
     lv_obj_set_style_bg_opa(_page_root, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(_page_root, LV_OBJ_FLAG_SCROLLABLE);
 
-    if (!_ui->create(_page_root, uiActionCallback, this)) {
+    if (!_ui->create(_page_root, uiActionCallback, this, uiHoldCallback, this)) {
         destroyUi();
         return;
     }
@@ -614,6 +655,7 @@ void MuseApp::refreshUi()
         _ui->setHint(hintText(state));
     }
     _ui->setMode(uiMode(state));
+    _ui->setWorking(_call_working.load());
     if (state == State::Listening) {
         _ui->setLevel(_input_pcm_peak.load() / VOICE_FULL_SCALE);
     } else if (state == State::Speaking) {
@@ -621,16 +663,20 @@ void MuseApp::refreshUi()
     }
     // The ring's progress: while listening it fills over the 15 s a voice
     // note runs to (the SDK's note cap); while speaking it follows the
-    // session's playback progress, sampled by the control task.
+    // session's playback progress, sampled by the control task. In a call
+    // there is no phase cap to fill towards (the idle limit is about
+    // quiet, not elapsed), so the ring stays empty.
     float progress = 0;
-    if (state == State::Listening) {
-        const uint32_t elapsed_ms = pdTICKS_TO_MS(xTaskGetTickCount() - _listen_started_tick);
-        progress = elapsed_ms / 15000.0f;
-        if (progress > 1) {
-            progress = 1;
+    if (!_in_call.load()) {
+        if (state == State::Listening) {
+            const uint32_t elapsed_ms = pdTICKS_TO_MS(xTaskGetTickCount() - _listen_started_tick);
+            progress = elapsed_ms / 15000.0f;
+            if (progress > 1) {
+                progress = 1;
+            }
+        } else if (state == State::Speaking) {
+            progress = _progress.load();
         }
-    } else if (state == State::Speaking) {
-        progress = _progress.load();
     }
     _ui->setProgress(progress);
     _ui->setChatMessage(role, text);
@@ -648,6 +694,7 @@ MuseUi::Mode MuseApp::uiMode(State state)
         return MuseUi::Mode::Offline;
     case State::Preparing:
     case State::Connecting:
+    case State::CallConnecting:
         return MuseUi::Mode::Busy;
     case State::Ready:
         return MuseUi::Mode::Ready;
@@ -687,12 +734,27 @@ const char *MuseApp::hintText(State state)
     case State::NetworkRequired:
         return offlineHint();
     case State::Ready:
+#if CONFIG_MUSE_REALTIME_VOICE
+        return "Tap to talk \u2022 hold: call";
+#else
         return "Tap to talk";
+#endif
+    case State::CallConnecting:
+        return "Connecting\u2026";
     case State::Listening:
+        if (_in_call.load()) {
+            return "On a call \u2022 tap to end";
+        }
         return "Listening \u2022 tap to send";
     case State::Thinking:
+        if (_in_call.load()) {
+            return "On a call \u2022 tap to end";
+        }
         return "Thinking \u2022 tap to cancel";
     case State::Speaking:
+        if (_in_call.load()) {
+            return "On a call \u2022 tap to end";
+        }
         return "Tap to interrupt";
     case State::Error:
         return "Tap to retry";
@@ -825,6 +887,14 @@ bool MuseApp::postControlEvent(const ControlEvent &event)
     ) == pdTRUE;
 }
 
+bool MuseApp::postControlEventNowait(const ControlEvent &event)
+{
+    if (!_control_queue || _shutdown.load()) {
+        return false;
+    }
+    return xQueueSend(_control_queue, &event, 0) == pdTRUE;
+}
+
 void MuseApp::controlLoop()
 {
     bool exit_requested = false;
@@ -845,6 +915,7 @@ void MuseApp::controlLoop()
 
     _visible.store(false);
     closeTurn();
+    requestCallEnd();
     if (_client) {
         _client->stop();
     }
@@ -863,8 +934,11 @@ void MuseApp::controlTick(uint32_t tick)
         return;
     }
     State state = _state.load();
-    if (state == State::Listening || state == State::Thinking ||
-            state == State::Speaking) {
+    // A call owns its own event drain (the call task); turn polling would
+    // read a turn that isn't there.
+    if (!_in_call.load() &&
+            (state == State::Listening || state == State::Thinking ||
+             state == State::Speaking)) {
         _client->pollEvents();
         if (state == State::Speaking) {
             // While a reply plays, the session pages the reply text by the
@@ -914,8 +988,8 @@ void MuseApp::pollSessionStatus()
     }
     State state = _state.load();
     if (state == State::Listening || state == State::Thinking ||
-            state == State::Speaking) {
-        return;  // A turn owns the state machine.
+            state == State::Speaking || state == State::CallConnecting) {
+        return;  // A turn or a call owns the state machine.
     }
     muse_hatch_status_t status = _client->status();
     const bool token_rejected =
@@ -987,6 +1061,7 @@ void MuseApp::pollProvisioning()
         }
     } else {
         closeTurn();
+        requestCallEnd();
         _client->stop();
         setState(State::NotProvisioned);
         setChatMessage("", "Pair in the Muse app\nto link this device");
@@ -1039,6 +1114,7 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
             }
         } else {
             closeTurn();
+            requestCallEnd();
             setState(State::NetworkRequired);
         }
         break;
@@ -1048,13 +1124,25 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         case State::Ready:
             startTurn();
             break;
+        case State::CallConnecting:
+            // Tapping while a call sets up cancels it.
+            requestCallEnd();
+            break;
         case State::Listening:
-            endTurn();
+            if (_in_call.load()) {
+                requestCallEnd();
+            } else {
+                endTurn();
+            }
             break;
         case State::Thinking:
         case State::Speaking:
-            cancelTurn();
-            setState(State::Ready);
+            if (_in_call.load()) {
+                requestCallEnd();
+            } else {
+                cancelTurn();
+                setState(State::Ready);
+            }
             break;
         case State::Error:
             _next_retry_tick = 0;  // Retry now instead of waiting for the timer.
@@ -1086,6 +1174,35 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
     case ControlEventType::TurnHeard:
         setChatMessage("user", event.text);
         break;
+    case ControlEventType::HoldPressed:
+        if (_state.load() == State::Ready) {
+            startCall();
+        } else if (_in_call.load()) {
+            requestCallEnd();
+        }
+        break;
+    case ControlEventType::CallViewChanged:
+        handleCallView(static_cast<CallView>(event.value));
+        break;
+    case ControlEventType::CallHeard:
+        setChatMessage("user", event.text);
+        break;
+    case ControlEventType::CallReply:
+        // Caller and reply text go to captions only, never the log.
+        setChatMessage("assistant", event.text);
+        break;
+    case ControlEventType::CallEnded: {
+        _in_call.store(false);
+        _call_working.store(false);
+        setChatMessage("", event.text[0] != '\0' ? event.text : "Call ended");
+        State state = _state.load();
+        if (_visible.load() &&
+                (state == State::CallConnecting || state == State::Listening ||
+                 state == State::Thinking || state == State::Speaking)) {
+            setState(State::Ready);
+        }
+        break;
+    }
     case ControlEventType::TurnReply:
         setChatMessage("assistant", event.text);
         if (_state.load() == State::Thinking) {
@@ -1118,9 +1235,10 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         break;
     case ControlEventType::AudioPreempted:
         closeTurn();
+        requestCallEnd();
         shutdownAudio();
         if (_state.load() == State::Listening || _state.load() == State::Thinking ||
-                _state.load() == State::Speaking) {
+                _state.load() == State::Speaking || _state.load() == State::CallConnecting) {
             setState(State::Ready);
         }
         break;
@@ -1139,6 +1257,7 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         break;
     case ControlEventType::TokenRevoked:
         closeTurn();
+        requestCallEnd();
         _client->stop();
         (void)muse_provisioning_unpair();
         _provisioned.store(false);
@@ -1209,6 +1328,7 @@ void MuseApp::handleAppVisible()
 void MuseApp::handleAppHidden(bool release_audio)
 {
     closeTurn();
+    requestCallEnd();
     // Leaving the screen mid-pairing ends pairing: the Muse app can only
     // pair while this screen is visible.
     stopBleAdvertising();
@@ -1649,11 +1769,17 @@ void MuseApp::shutdownAudio()
     _playback_enabled.store(false);
     _accept_playback.store(false);
     _audio_tasks_running.store(false);
-    while (_input_task_running.load() || _playback_task_running.load()) {
+    // The call task owns the resamplers too while a call runs: ask it to
+    // hang up and wait for it before closing them (it exits within its
+    // bounded end-wait once ENDED arrives, or the give-up deadline).
+    requestCallEnd();
+    while (_input_task_running.load() || _playback_task_running.load() ||
+            _call_task_running.load()) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     _input_task = nullptr;
     _playback_task = nullptr;
+    _call_task = nullptr;
     if (_input_resampler) {
         esp_ae_rate_cvt_close(_input_resampler);
         _input_resampler = nullptr;
@@ -1672,6 +1798,11 @@ void MuseApp::shutdownAudio()
 void MuseApp::startTurn()
 {
     if (!_client) {
+        return;
+    }
+    // A turn and a call must never overlap: the session has no guard, and
+    // muse_hatch_turn_begin() would start a voice note even mid-call.
+    if (_in_call.load()) {
         return;
     }
     if (!_provisioned.load()) {
@@ -1728,6 +1859,403 @@ void MuseApp::closeTurn()
     _drain_posted.store(false);
 }
 
+// ---- Realtime voice calls (Phase 4.1) ----
+
+void MuseApp::startCall()
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    if (!_client || _in_call.load() || _call_task_running.load()) {
+        return;
+    }
+    if (!_provisioned.load()) {
+        setState(State::NotProvisioned);
+        return;
+    }
+    if (!isNetworkReady()) {
+        setState(State::NetworkRequired);
+        return;
+    }
+    if (!_client->callReady()) {
+        setState(State::Connecting);
+        _client->testConnection();
+        return;
+    }
+    // A turn and a call must never overlap (see startTurn).
+    closeTurn();
+    if (!ensureAudioReady()) {
+        setError("Audio unavailable");
+        return;
+    }
+    clearConversationUi();
+    _call_end_requested.store(false);
+    _call_working.store(false);
+    _in_call.store(true);
+    _call_task_running.store(true);
+    // Mark the task running before creating it so shutdownAudio() cannot
+    // close the resamplers while it is still starting up.
+    if (createMuseTask(
+            callTaskEntry,
+            "muse_call",
+            CALL_TASK_STACK_SIZE,
+            this,
+            8,
+            &_call_task,
+            0,
+            false
+         ) != pdPASS) {
+        _call_task_running.store(false);
+        _call_task = nullptr;
+        _in_call.store(false);
+        setError("Start call task");
+        return;
+    }
+    setState(State::CallConnecting);
+#else
+    showToastSoon("Calls unavailable");
+#endif
+}
+
+void MuseApp::requestCallEnd()
+{
+    // The call task hangs up itself (muse_voice_call_end must run on the
+    // voice task); the control task only raises the flag. Safe with no
+    // call active: startCall clears the flag before creating the task.
+    _call_end_requested.store(true);
+}
+
+void MuseApp::handleCallView(CallView view)
+{
+    if (!_in_call.load()) {
+        return;  // Stale: the call already ended.
+    }
+    switch (view) {
+    case CallView::Connecting:
+        _call_working.store(false);
+        setState(State::CallConnecting);
+        break;
+    case CallView::Listening:
+        _call_working.store(false);
+        setState(State::Listening);
+        break;
+    case CallView::Thinking:
+        _call_working.store(false);
+        setState(State::Thinking);
+        break;
+    case CallView::Speaking:
+        _call_working.store(false);
+        setState(State::Speaking);
+        break;
+    case CallView::Working:
+        _call_working.store(true);
+        setState(State::Thinking);
+        break;
+    case CallView::Ending:
+        _call_working.store(false);
+        setChatMessage("", "Hanging up\u2026");
+        break;
+    }
+}
+
+/*
+ * The call task: the SDK's run_call (muse_voice.c), hands-free only, in
+ * 10 ms passes. One read + one write per pass paces the duplex bus:
+ * drain call events, feed gated mic audio, read reply audio, write it.
+ * The half-duplex gate keeps the mic shut while Muse is audibly talking
+ * plus a 300 ms tail; silent keepalive audio doesn't hold it shut.
+ * No PTT call yet: the UI has no press/release events (see MuseUi).
+ *
+ * The turn tasks idle during a call (_capture_enabled/_playback_enabled
+ * are false), so this task alone uses the audio client and resamplers.
+ * It exits on ENDED (after draining up to 2 s of queued reply audio
+ * without reopening the mic), on the hang-up give-up deadline, or when
+ * the audio goes away; in every case it ends the call first if it hasn't
+ * ended already, and posts CallEnded with the reason.
+ */
+void MuseApp::callAudio()
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    const size_t input_bytes =
+        INPUT_READ_FRAMES * DEVICE_TDM_CHANNELS * sizeof(int16_t);
+    int16_t *device_stereo = static_cast<int16_t *>(malloc(input_bytes));
+    int16_t *mono24 =
+        static_cast<int16_t *>(malloc(INPUT_READ_FRAMES * sizeof(int16_t)));
+    int16_t *mono16 = static_cast<int16_t *>(
+                          malloc(_input_resampler_max_samples * sizeof(int16_t))
+                      );
+    int16_t *out16 =
+        static_cast<int16_t *>(malloc(CALL_CHUNK_FRAMES * sizeof(int16_t)));
+    int16_t *out24 = static_cast<int16_t *>(
+                         malloc(_output_resampler_max_samples * sizeof(int16_t))
+                     );
+    int16_t *stereo = static_cast<int16_t *>(
+                          malloc(
+                              _output_resampler_max_samples *
+                              DEVICE_TDM_CHANNELS * sizeof(int16_t)
+                          )
+                      );
+    if (!device_stereo || !mono24 || !mono16 || !out16 || !out24 || !stereo) {
+        free(device_stereo);
+        free(mono24);
+        free(mono16);
+        free(out16);
+        free(out24);
+        free(stereo);
+        ControlEvent event = {};
+        event.type = ControlEventType::AudioError;
+        copyString(
+            event.detail, sizeof(event.detail), "Allocate Muse call buffers"
+        );
+        postControlEvent(event);
+        _call_task_running.store(false);
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    muse_vc_gate_t gate;
+    muse_vc_gate_init(&gate, false, CALL_TAIL_US);
+    _client->startCall();
+
+    bool live = false;
+    bool server_hold = false;
+    bool hung_up = false;
+    bool ended = false;
+    int64_t give_up = 0;
+    CallView view = CallView::Connecting;
+    char end_reason[96] = {};
+    char text[96] = {};
+    {
+        ControlEvent event = {};
+        event.type = ControlEventType::CallViewChanged;
+        event.value = static_cast<uint32_t>(CallView::Connecting);
+        postControlEventNowait(event);
+    }
+
+    while (_audio_tasks_running.load() && !_shutdown.load() && !ended) {
+        if (_call_end_requested.load() && !hung_up) {
+            hung_up = true;
+            give_up = esp_timer_get_time() + CALL_END_WAIT_US;
+            _client->endCall();
+            view = CallView::Ending;
+            ControlEvent event = {};
+            event.type = ControlEventType::CallViewChanged;
+            event.value = static_cast<uint32_t>(CallView::Ending);
+            postControlEventNowait(event);
+        }
+
+        esp_err_t ret =
+            audio_client_read(_audio_client, device_stereo, input_bytes);
+        bool captured = ret == ESP_OK;
+        int32_t peak = 0;
+        if (captured) {
+            peak = mixMicToMono(device_stereo, mono24, INPUT_READ_FRAMES);
+        }
+        const int64_t now = esp_timer_get_time();
+
+        muse_voice_call_ev_t ev;
+        while ((ev = _client->pollCallEvent(text, sizeof(text))) !=
+               MUSE_VOICE_CALL_EV_NONE) {
+            ControlEvent event = {};
+            switch (ev) {
+            case MUSE_VOICE_CALL_EV_READY:
+                live = true;
+                break;
+            case MUSE_VOICE_CALL_EV_HEARD:
+                event.type = ControlEventType::CallHeard;
+                copyString(event.text, sizeof(event.text), text);
+                postControlEventNowait(event);
+                break;
+            case MUSE_VOICE_CALL_EV_REPLY:
+                event.type = ControlEventType::CallReply;
+                copyString(event.text, sizeof(event.text), text);
+                postControlEventNowait(event);
+                break;
+            case MUSE_VOICE_CALL_EV_HOLD:
+                server_hold = true;
+                break;
+            case MUSE_VOICE_CALL_EV_RESUME:
+                server_hold = false;
+                break;
+            case MUSE_VOICE_CALL_EV_ENDED:
+                ended = true;
+                copyString(end_reason, sizeof(end_reason), text);
+                break;
+            case MUSE_VOICE_CALL_EV_NONE:
+            default:
+                break;
+            }
+            if (ended) {
+                break;
+            }
+        }
+        if (ended) {
+            break;
+        }
+
+        const bool mic = captured && !hung_up && !server_hold && live &&
+                         muse_vc_gate_mic_open(&gate, now);
+        _input_pcm_peak.store(mic ? peak : 0);
+        if (mic && _client) {
+            uint32_t out_samples = 0;
+            if (esp_ae_rate_cvt_process(
+                    _input_resampler,
+                    reinterpret_cast<esp_ae_sample_t>(mono24),
+                    INPUT_READ_FRAMES,
+                    reinterpret_cast<esp_ae_sample_t>(mono16),
+                    &out_samples
+                ) == ESP_AE_ERR_OK && out_samples > 0 &&
+                    out_samples <= _input_resampler_max_samples) {
+                _client->feedCallAudio(mono16, out_samples);
+            }
+        }
+
+        bool flushed = false;
+        const size_t n = hung_up ? 0 :
+                         _client ? _client->readCallAudio(out16, CALL_CHUNK_FRAMES, &flushed) : 0;
+        if (flushed) {
+            muse_vc_gate_flush(&gate, now);
+        }
+        if (n > 0) {
+            muse_vc_gate_playout(&gate, out16, n, now, CALL_SPEAKER_LAG_US);
+            uint32_t out_samples = 0;
+            if (esp_ae_rate_cvt_process(
+                    _output_resampler,
+                    reinterpret_cast<esp_ae_sample_t>(out16),
+                    n,
+                    reinterpret_cast<esp_ae_sample_t>(out24),
+                    &out_samples
+                ) == ESP_AE_ERR_OK && out_samples > 0 &&
+                    out_samples <= _output_resampler_max_samples) {
+                int32_t out_peak = 0;
+                for (size_t i = 0; i < out_samples; i++) {
+                    stereo[i * DEVICE_TDM_CHANNELS] = out24[i];
+                    stereo[i * DEVICE_TDM_CHANNELS + 1] = out24[i];
+                    const int32_t magnitude =
+                        out24[i] < 0 ? -(int32_t)out24[i] : (int32_t)out24[i];
+                    if (magnitude > out_peak) {
+                        out_peak = magnitude;
+                    }
+                }
+                _output_pcm_peak.store(out_peak);
+                (void)audio_client_write(
+                    _audio_client,
+                    stereo,
+                    out_samples * DEVICE_TDM_CHANNELS * sizeof(int16_t)
+                );
+            }
+        } else {
+            // Nothing to play: write silence to pace the duplex bus, as
+            // the SDK does (one write per pass).
+            const size_t silence_frames = INPUT_READ_FRAMES;
+            memset(
+                stereo, 0,
+                silence_frames * DEVICE_TDM_CHANNELS * sizeof(int16_t)
+            );
+            (void)audio_client_write(
+                _audio_client,
+                stereo,
+                silence_frames * DEVICE_TDM_CHANNELS * sizeof(int16_t)
+            );
+        }
+
+        const bool speaking = !muse_vc_gate_mic_open(&gate, now);
+        CallView next = CallView::Listening;
+        if (hung_up) {
+            next = CallView::Ending;
+        } else if (!live) {
+            next = CallView::Connecting;
+        } else if (server_hold) {
+            next = CallView::Thinking;
+        } else if (speaking) {
+            next = CallView::Speaking;
+        } else if (_client && _client->callWorking()) {
+            next = CallView::Working;
+        }
+        if (next != view) {
+            view = next;
+            ControlEvent event = {};
+            event.type = ControlEventType::CallViewChanged;
+            event.value = static_cast<uint32_t>(view);
+            postControlEventNowait(event);
+        }
+
+        if (!captured) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (hung_up && now > give_up) {
+            break;  // ENDED never arrived; the session-side cleanup retries it.
+        }
+    }
+
+    if (!ended) {
+        // Audio going away, shutdown, or the give-up deadline: end the
+        // call explicitly rather than by dropping (the VM keeps a dropped
+        // call through its disconnect grace; an unconfirmed end-call is
+        // kept as one pending cleanup and retried on reconnect).
+        _client->endCall();
+    } else if (!hung_up && _audio_tasks_running.load()) {
+        // ENDED closes the network, not the speaker queue. Drain its
+        // bounded tail without reopening the mic; a new press only
+        // interrupts this tail.
+        const int64_t until = esp_timer_get_time() + CALL_DRAIN_US;
+        while (esp_timer_get_time() < until &&
+               _audio_tasks_running.load() && !_shutdown.load() &&
+               !_call_end_requested.load()) {
+            bool flushed = false;
+            const size_t n = _client ?
+                             _client->readCallAudio(out16, CALL_CHUNK_FRAMES, &flushed) : 0;
+            if (n == 0) {
+                break;
+            }
+            uint32_t out_samples = 0;
+            if (esp_ae_rate_cvt_process(
+                    _output_resampler,
+                    reinterpret_cast<esp_ae_sample_t>(out16),
+                    n,
+                    reinterpret_cast<esp_ae_sample_t>(out24),
+                    &out_samples
+                ) != ESP_AE_ERR_OK || out_samples == 0 ||
+                    out_samples > _output_resampler_max_samples) {
+                break;
+            }
+            for (size_t i = 0; i < out_samples; i++) {
+                stereo[i * DEVICE_TDM_CHANNELS] = out24[i];
+                stereo[i * DEVICE_TDM_CHANNELS + 1] = out24[i];
+            }
+            if (audio_client_write(
+                    _audio_client,
+                    stereo,
+                    out_samples * DEVICE_TDM_CHANNELS * sizeof(int16_t)
+                ) != ESP_OK) {
+                break;
+            }
+        }
+    }
+
+    {
+        ControlEvent event = {};
+        event.type = ControlEventType::CallEnded;
+        copyString(
+            event.text, sizeof(event.text),
+            end_reason[0] != '\0' ? end_reason : "Call ended"
+        );
+        postControlEvent(event);
+    }
+    free(device_stereo);
+    free(mono24);
+    free(mono16);
+    free(out16);
+    free(out24);
+    free(stereo);
+    _input_pcm_peak.store(0);
+    _output_pcm_peak.store(0);
+    _call_task_running.store(false);
+    vTaskDelete(nullptr);
+#else
+    _call_task_running.store(false);
+    vTaskDelete(nullptr);
+#endif
+}
+
 /*
  * Capture: the audio service hands us 10 ms of 24 kHz stereo. Mix (or pick)
  * the microphones to mono, resample to 16 kHz, and feed the session core,
@@ -1768,27 +2296,7 @@ void MuseApp::inputAudio()
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        int32_t peak = 0;
-        for (size_t i = 0; i < INPUT_READ_FRAMES; i++) {
-            const int16_t mic1 =
-                device_stereo[i * DEVICE_TDM_CHANNELS + DEVICE_MIC1_SLOT];
-            const int16_t mic2 =
-                device_stereo[i * DEVICE_TDM_CHANNELS + DEVICE_MIC2_SLOT];
-#if defined(CONFIG_MUSE_APP_CAPTURE_MIC_1)
-            const int16_t sample = mic1;
-#elif defined(CONFIG_MUSE_APP_CAPTURE_MIC_2)
-            const int16_t sample = mic2;
-#else
-            const int16_t sample =
-                static_cast<int16_t>(((int32_t)mic1 + (int32_t)mic2) / 2);
-#endif
-            mono24[i] = sample;
-            const int32_t magnitude = sample < 0 ? -(int32_t)sample : (int32_t)sample;
-            if (magnitude > peak) {
-                peak = magnitude;
-            }
-        }
-        _input_pcm_peak.store(peak);
+        _input_pcm_peak.store(mixMicToMono(device_stereo, mono24, INPUT_READ_FRAMES));
         if (_client && _capture_enabled.load()) {
             uint32_t out_samples = 0;
             if (esp_ae_rate_cvt_process(
@@ -1924,6 +2432,8 @@ const char *MuseApp::stateText(State state)
         return "THINKING";
     case State::Speaking:
         return "SPEAKING";
+    case State::CallConnecting:
+        return "CONNECTING";
     case State::Error:
         return "ERROR";
     default:
@@ -1949,6 +2459,11 @@ void MuseApp::inputTaskEntry(void *arg)
 void MuseApp::playbackTaskEntry(void *arg)
 {
     static_cast<MuseApp *>(arg)->playAudio();
+}
+
+void MuseApp::callTaskEntry(void *arg)
+{
+    static_cast<MuseApp *>(arg)->callAudio();
 }
 
 void MuseApp::refreshTaskEntry(void *arg)
@@ -1998,6 +2513,14 @@ void MuseApp::uiActionCallback(void *user_data)
     }
     ControlEvent event = {};
     event.type = ControlEventType::ActionPressed;
+    instance->postControlEvent(event);
+}
+
+void MuseApp::uiHoldCallback(void *user_data)
+{
+    auto *instance = static_cast<MuseApp *>(user_data);
+    ControlEvent event = {};
+    event.type = ControlEventType::HoldPressed;
     instance->postControlEvent(event);
 }
 

@@ -11,6 +11,7 @@
 #include "muse_chat_priv.h"
 #include "muse_credentials.h"
 #include "muse_provisioning.h"
+#include "sdkconfig.h"
 
 namespace esp_brookesia::apps {
 
@@ -140,6 +141,76 @@ bool MuseClient::checkIncoming()
     return muse_hatch_incoming();
 }
 
+// ---- Realtime voice calls (Phase 4.1) ----
+
+bool MuseClient::callReady() const
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    return muse_voice_call_ready();
+#else
+    return false;
+#endif
+}
+
+void MuseClient::startCall()
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    muse_voice_call_start();
+#endif
+}
+
+void MuseClient::endCall()
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    muse_voice_call_end();
+#endif
+}
+
+bool MuseClient::feedCallAudio(const int16_t *pcm, size_t frames)
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    return muse_voice_call_audio(pcm, frames);
+#else
+    (void)pcm;
+    (void)frames;
+    return false;
+#endif
+}
+
+size_t MuseClient::readCallAudio(int16_t *pcm, size_t frames, bool *flushed)
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    return muse_voice_call_read(pcm, frames, flushed);
+#else
+    (void)pcm;
+    (void)frames;
+    if (flushed) {
+        *flushed = false;
+    }
+    return 0;
+#endif
+}
+
+muse_voice_call_ev_t MuseClient::pollCallEvent(char *text, size_t cap)
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    return muse_voice_call_event(text, cap);
+#else
+    (void)text;
+    (void)cap;
+    return MUSE_VOICE_CALL_EV_NONE;
+#endif
+}
+
+bool MuseClient::callWorking() const
+{
+#if CONFIG_MUSE_REALTIME_VOICE
+    return muse_voice_call_working();
+#else
+    return false;
+#endif
+}
+
 size_t MuseClient::readReply(int16_t *pcm, size_t frames, int wait_ms)
 {
     return muse_hatch_turn_read(pcm, frames, wait_ms);
@@ -167,3 +238,13 @@ const char *MuseClient::nodeId() const
 }
 
 } // namespace esp_brookesia::apps
+
+// Provided by the app for the vendored call core (muse_voice_call.h): the
+// Link node id the call names as its device. Called on the session task,
+// whose stack is in PSRAM: it must not read flash — muse_vm_node_id()
+// returns a RAM-cached string, so it qualifies. Defined unconditionally;
+// with calls off nothing references it.
+extern "C" const char *muse_voice_call_device_id(void)
+{
+    return muse_vm_node_id();
+}

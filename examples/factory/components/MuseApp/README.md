@@ -16,6 +16,9 @@ and knob patterns, same LVGL look — but the backend is Muse, not Xiaozhi.
   on the screen, paced like speech (see "Replies are text-only" below).
 - Tap while Muse is thinking or speaking to cancel.
 - Long-press the avatar to pet it (the SDK's happy reaction).
+- Long-press anywhere else to start a realtime voice call (hands-free,
+  half-duplex — Muse's speech plays live); tap to hang up. See
+  "Realtime voice calls" below.
 - Turn the knob for volume. A long press / leaving the app closes the
   session and releases the audio codec, exactly like Xiaozhi.
 - Offline, it offers the WLAN settings page (`Settings::openWlan`).
@@ -84,7 +87,26 @@ pairing. The BLE name is `MuseGadget-XXXXXX`.
 | LISTENING | Recording | Sends the turn |
 | THINKING | Waiting for Muse | Cancels the turn |
 | SPEAKING | Reply playing | Interrupts |
+| CONNECTING (call) | A call is setting up | Cancels the call |
+| LISTENING / THINKING / SPEAKING (in a call) | On a call | Hangs up |
 | ERROR | Something failed (detail on screen) | Retries |
+
+## Realtime voice calls
+
+A long press anywhere except the avatar starts a hands-free realtime
+voice call (`POST /voice/realtime`, Phase 4.1): Muse's speech arrives
+as live 16 kHz audio and plays on the speaker, and the mic stays open
+while Muse isn't talking. Tap hangs up; the call also ends on 45 s of
+quiet, at 15 minutes, or when Muse ends it. The avatar shows the
+thinking variant with a working pose (typing on a little keyboard)
+while Muse is busy on work it was asked for during a call.
+
+Half-duplex: the mic shuts while Muse is audibly talking, plus a
+300 ms tail — this board has no playback reference for echo
+cancellation (see `../VENDORED.md`), so talking over Muse isn't
+possible. No push-to-talk call yet: the UI has no press/release
+events. A call and a voice-note turn never overlap. The ring stays
+empty during a call (there is no phase cap to fill towards).
 
 ## The avatar
 
@@ -117,12 +139,14 @@ SDK uses. See `MuseUi.hpp` for the full layout notes.
 ```
 MuseApp (this component)
   MuseApp.cpp    Brookesia app: state machine, FreeRTOS tasks
-                 (control / capture / playback / token refresh), UI glue
+                 (control / capture / playback / call / token refresh),
+                 UI glue
   MuseClient.cpp Adapter over the vendored session core + credential store
   MuseUi.cpp     LVGL avatar face / ring / meter / captions (SDK full layout)
   assets/        Home-screen icon (112x112 ARGB8888, bunny motif)
 ../muse_avatar   Vendored SDK avatar renderer (muse_pixel.c, happy_anim)
 ../muse_session  Vendored SDK session core (Noise + HTTPS + dictation)
+                 + realtime voice-call sources (muse_voice_call*)
 ../muse_vm       VM discovery, device-token mint/refresh, NVS store,
                  and the shared provisioning interface (muse_provisioning.h)
 ../MuseBlePairing  BLE pairing v5 GATT server (Bluedroid port of the SDK's
@@ -148,9 +172,9 @@ duplicate to stereo → `audio_client_write`.
   defaults to `VOICE_NOTE=1`: each press is uploaded as a WAV voice note
   to `/chat/stream`, not streamed to `/api/voice/dictation`. The
   streaming path exists in the same file behind `VOICE_NOTE=0`.
-- **No wake word.** Turn-based tap-to-talk only.
-- **No realtime voice calls** (the SDK's `muse_voice_call` realtime
-  sources were not vendored — Phase 4).
+- **No wake word.** Turn-based tap-to-talk only (plus calls, above).
+- **Calls are half-duplex, hands-free only.** No echo cancellation, no
+  push-to-talk call (see "Realtime voice calls" above).
 - **No Link control session.** The session core's Link hooks are stubbed;
   the app uses the own-token path only (fetch VMs from
   `api.muse.ai`, mint device tokens, Noise session to the VM).

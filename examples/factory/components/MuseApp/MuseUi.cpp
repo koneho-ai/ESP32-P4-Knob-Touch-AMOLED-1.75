@@ -344,7 +344,13 @@ bool MuseUi::preload()
     return _text_font != nullptr;
 }
 
-bool MuseUi::create(lv_obj_t *parent, ActionCallback action_callback, void *action_context)
+bool MuseUi::create(
+    lv_obj_t *parent,
+    ActionCallback action_callback,
+    void *action_context,
+    ActionCallback hold_callback,
+    void *hold_context
+)
 {
     destroyView();
     if (!parent || !_text_font) {
@@ -352,6 +358,8 @@ bool MuseUi::create(lv_obj_t *parent, ActionCallback action_callback, void *acti
     }
     _action_callback = action_callback;
     _action_context = action_context;
+    _hold_callback = hold_callback;
+    _hold_context = hold_context;
 
     // Black, like the SDK's face tile: the avatar's canvas is black, and a
     // different background would show as a square around the character.
@@ -364,6 +372,9 @@ bool MuseUi::create(lv_obj_t *parent, ActionCallback action_callback, void *acti
     // SHORT_CLICKED, not CLICKED: a long press on the avatar pets it, and
     // CLICKED fires even after a long press — SHORT_CLICKED is suppressed.
     lv_obj_add_event_cb(_root, rootEventCallback, LV_EVENT_SHORT_CLICKED, this);
+    // LONG_PRESSED bubbles up from any child that doesn't stop it; the
+    // avatar stops it (pet), so a hold anywhere else starts a call.
+    lv_obj_add_event_cb(_root, rootHoldCallback, LV_EVENT_LONG_PRESSED, this);
 
     // The progress ring around the bezel.
     _ring = lv_arc_create(_root);
@@ -557,6 +568,11 @@ void MuseUi::setMode(Mode mode)
     applyMode();
 }
 
+void MuseUi::setWorking(bool working)
+{
+    _working = working;
+}
+
 void MuseUi::setLevel(float level)
 {
     _level_target = clamp01(level);
@@ -670,7 +686,7 @@ void MuseUi::frameTick()
     pose.mode_t = mode_t;
     pose.level = _level_smooth;
     pose.happy = happiness();
-    pose.working = 0;   /* live calls only; v1 has none */
+    pose.working = _working ? 1 : 0;   /* live calls only (Phase 4.1) */
     muse_pixel_render(&pose);
     invalidate_muse();
 
@@ -838,10 +854,22 @@ void MuseUi::rootEventCallback(lv_event_t *event)
     }
 }
 
+void MuseUi::rootHoldCallback(lv_event_t *event)
+{
+    auto *instance = static_cast<MuseUi *>(lv_event_get_user_data(event));
+    if (instance && instance->_hold_callback &&
+            lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+        instance->_hold_callback(instance->_hold_context);
+    }
+}
+
 void MuseUi::avatarEventCallback(lv_event_t *event)
 {
     auto *instance = static_cast<MuseUi *>(lv_event_get_user_data(event));
     if (instance && lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+        // A pet must not also reach the root's hold handler (which would
+        // start a call): stop the event bubbling here.
+        lv_event_stop_bubbling(event);
         instance->onPet();
     }
 }
