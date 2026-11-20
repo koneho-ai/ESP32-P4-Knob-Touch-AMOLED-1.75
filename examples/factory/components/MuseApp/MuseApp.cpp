@@ -21,8 +21,10 @@
 #include "identity.h"
 #include "knob_service.h"
 #include "muse_ble_pairing.h"
+#include "muse_credentials.h"
 #include "muse_provisioning.h"
 #include "muse_wakeword_glue.h"
+#include "vm_api.h"
 #include "wifi_service.h"
 #include "Settings.hpp"
 #include "esp_heap_caps.h"
@@ -269,6 +271,16 @@ bool MuseApp::run()
 
 bool MuseApp::back()
 {
+    // Settings first: back closes the picker, then the settings page,
+    // before it closes the app (the Settings app's goBack pattern).
+    if (_settings && _settings->visible()) {
+        if (_settings->pickerVisible()) {
+            _settings->hideVmPicker();
+        } else {
+            hideSettings();
+        }
+        return true;
+    }
     _visible.store(false);
     knob_service_detach(knobCallback, this);
     postAppHidden();
@@ -380,6 +392,13 @@ bool MuseApp::init()
         }
     }
     initLink();
+    if (!_settings) {
+        _settings = new (std::nothrow) MuseSettingsUi();
+        if (!_settings) {
+            setError("Create Muse settings UI");
+            return false;
+        }
+    }
     (void)_ui->preload();
 
     if (!_audio_client) {
@@ -543,6 +562,8 @@ bool MuseApp::deinit()
     destroyUi();
     delete _ui;
     _ui = nullptr;
+    delete _settings;
+    _settings = nullptr;
     delete _client;
     _client = nullptr;
 
@@ -615,9 +636,33 @@ void MuseApp::createUi()
     lv_obj_set_style_bg_opa(_page_root, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(_page_root, LV_OBJ_FLAG_SCROLLABLE);
 
-    if (!_ui->create(_page_root, uiActionCallback, this, uiHoldCallback, this)) {
+    if (!_ui->create(_page_root, uiActionCallback, this, uiHoldCallback, this, uiSettingsCallback, this)) {
         destroyUi();
         return;
+    }
+    if (_settings) {
+        MuseSettingsUi::Callbacks callbacks;
+        callbacks.onBack = [this]() { hideSettings(); };
+        callbacks.onTestConnection = [this]() {
+            ControlEvent event = {};
+            event.type = ControlEventType::TestConnectionRequested;
+            postControlEvent(event);
+        };
+        callbacks.onSignOut = [this]() {
+            // Close the page first (LVGL task), then unpair on the control task.
+            hideSettings();
+            ControlEvent event = {};
+            event.type = ControlEventType::SignOutRequested;
+            postControlEvent(event);
+        };
+        callbacks.onOpenVmPicker = [this]() { openVmPicker(); };
+        callbacks.onVmPicked = [this](const char *vm_id) {
+            ControlEvent event = {};
+            event.type = ControlEventType::VmPicked;
+            copyString(event.text, sizeof(event.text), vm_id ? vm_id : "");
+            postControlEvent(event);
+        };
+        _settings->create(_page_root, callbacks);
     }
     // Reply pages wrap to the caption box's pixel width, measured in the
     // caption font, so no line wraps again on screen (SDK muse_ui.c: the
@@ -632,6 +677,11 @@ void MuseApp::destroyUi()
     if (_ui_timer) {
         lv_timer_delete(_ui_timer);
         _ui_timer = nullptr;
+    }
+    if (_settings) {
+        // Closes the sign-out dialog too (it lives on lv_layer_top, not
+        // under _page_root, so deleting the root would strand it).
+        _settings->destroy();
     }
     if (_ui) {
         _ui->destroy();
@@ -701,6 +751,11 @@ void MuseApp::refreshUi()
     _ui->setChatMessage(role, text);
     if (toast[0] != '\0') {
         _ui->showToast(toast);
+    }
+    // Settings page (Phase 4.4): live values, and the VM list the fetch
+    // worker filled if the picker is waiting for it.
+    if (_settings && _settings->visible()) {
+        refreshSettings();
     }
 }
 
@@ -820,6 +875,11 @@ void MuseApp::openWlanSettings()
 void MuseApp::knobCallback(int steps, void *user_ctx)
 {
     auto *instance = static_cast<MuseApp *>(user_ctx);
+    // Settings open: the knob scrolls the page (the Settings app's pattern).
+    if (instance->_settings && instance->_settings->visible()) {
+        instance->_settings->knob(steps);
+        return;
+    }
     const int volume = audio_service_get_volume() + steps * VOLUME_STEP;
     audio_service_set_volume(volume < 0 ? 0 : (volume > 100 ? 100 : volume));
     if (instance->_ui) {
@@ -1333,6 +1393,26 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
         // The refresh may invalidate Link's minted VM token: re-resolve.
         restartLink();
         break;
+    case ControlEventType::VmPicked: {
+        // The picker chose a VM ("" = the account's default): store the
+        // preference and reconnect both sessions with it.
+        char current[128] = {};
+        muse_vm_cached_vm(current, sizeof(current));
+        if (strcmp(current, event.text) != 0) {
+            muse_vm_set_preferred_vm(event.text);
+            _client->configChanged();
+            _client->testConnection();
+            setState(State::Connecting);
+            restartLink();
+        }
+        break;
+    }
+    case ControlEventType::TestConnectionRequested:
+        _client->testConnection();
+        break;
+    case ControlEventType::SignOutRequested:
+        // The settings page's Sign out, confirmed: same as a revoked token.
+        [[fallthrough]];
     case ControlEventType::LinkUnpaired:
         // The server unpaired this device remotely: same as a revoked token.
         [[fallthrough]];
@@ -1347,7 +1427,11 @@ void MuseApp::handleControlEvent(const ControlEvent &event)
             (void)muse_ble_pairing_set_provisioned(false);
         }
         setState(State::NotProvisioned);
-        setChatMessage("", "Pairing expired\nPair again in the Muse app");
+        if (event.type == ControlEventType::SignOutRequested) {
+            setChatMessage("", "Signed out\nPair again in the Muse app");
+        } else {
+            setChatMessage("", "Pairing expired\nPair again in the Muse app");
+        }
         startBleAdvertising();
         break;
     case ControlEventType::LinkAuthFailed:
@@ -2167,6 +2251,139 @@ void MuseApp::restartLink()
     _link->restart();
 }
 
+// ---- Settings page (Phase 4.4) ----
+
+void MuseApp::showSettings()
+{
+    if (!_settings || !_ui || !_ui->root()) {
+        return;
+    }
+    lv_obj_add_flag(_ui->root(), LV_OBJ_FLAG_HIDDEN);
+    _settings->show();
+    refreshSettings();
+}
+
+void MuseApp::hideSettings()
+{
+    if (!_settings || !_ui || !_ui->root()) {
+        return;
+    }
+    _settings->hide();
+    lv_obj_remove_flag(_ui->root(), LV_OBJ_FLAG_HIDDEN);
+}
+
+void MuseApp::refreshSettings()
+{
+    if (!_settings || !_settings->visible() || !_client) {
+        return;
+    }
+    muse_hatch_status_t hatch = _client->status();
+    char preferred[128] = {};
+    char host[64] = {};
+    muse_vm_cached_vm(preferred, sizeof(preferred));
+    muse_vm_cached_host(host, sizeof(host));
+    MuseSettingsUi::Status status;
+    status.provisioned = _provisioned.load();
+    status.hatch_state = muse_hatch_state_name(hatch.state);
+    status.hatch_detail = hatch.detail;
+    status.connected_vm_id = hatch.vm_id;
+    status.preferred_vm_id = preferred;
+    status.token_set = muse_vm_cached_token_len() > 0;
+    status.host = host;
+    status.wakeword_on = muse_wakeword_enabled();
+    status.link_connected = _link && _link->isConnected();
+    _settings->refresh(status);
+
+    // The VM list the fetch worker filled, if the picker is waiting for it.
+    if (_state_mutex && xSemaphoreTake(_state_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        const bool dirty = _vm_list_dirty;
+        _vm_list_dirty = false;
+        MuseSettingsUi::VmEntry vms[MuseSettingsUi::kMaxVms];
+        int count = 0;
+        bool error = false;
+        char preferred_vm[128] = {};
+        if (dirty) {
+            count = _vm_list_count;
+            error = _vm_list_error;
+            for (int i = 0; i < count; i++) {
+                vms[i] = _vm_list[i];
+            }
+            copyString(preferred_vm, sizeof(preferred_vm), _vm_list_preferred);
+        }
+        xSemaphoreGive(_state_mutex);
+        if (dirty) {
+            _settings->setVmList(vms, count, preferred_vm, error);
+        }
+    }
+}
+
+void MuseApp::openVmPicker()
+{
+    if (!_settings) {
+        return;
+    }
+    _settings->showVmPicker();
+    fetchVmList();
+}
+
+void MuseApp::fetchVmList()
+{
+    if (_vm_fetch_running.exchange(true)) {
+        return;
+    }
+    if (createMuseTask(vmFetchTaskEntry, "muse_vmfetch", VM_FETCH_TASK_STACK_SIZE, this, 4, nullptr, 0,
+                       false) != pdPASS) {
+        _vm_fetch_running.store(false);
+        // Report the failure through the shared state so the picker shows it.
+        if (_state_mutex && xSemaphoreTake(_state_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            _vm_list_count = 0;
+            _vm_list_error = true;
+            _vm_list_dirty = true;
+            xSemaphoreGive(_state_mutex);
+        }
+    }
+}
+
+void MuseApp::vmFetchTaskEntry(void *arg)
+{
+    auto *instance = static_cast<MuseApp *>(arg);
+    // One fetch_vms call with the cached device token.
+    char token[MUSE_VM_TOKEN_MAX + 1] = {};
+    muse_vm_cached_token(token, sizeof(token));
+    vm_info_t vms[VM_API_MAX_VMS] = {};
+    int count = VM_API_ERR_FAILED;
+    if (token[0] != '\0') {
+        count = vm_api_fetch_vms(token, vms, VM_API_MAX_VMS);
+    }
+    const int fetched = count;
+    if (instance->_state_mutex &&
+            xSemaphoreTake(instance->_state_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        instance->_vm_list_count = 0;
+        instance->_vm_list_error = fetched < 0;
+        if (fetched > 0) {
+            if (count > MuseSettingsUi::kMaxVms) {
+                count = MuseSettingsUi::kMaxVms;
+            }
+            for (int i = 0; i < count; i++) {
+                copyString(instance->_vm_list[i].id, sizeof(instance->_vm_list[i].id),
+                           vms[i].vm_id ? vms[i].vm_id : "");
+                copyString(instance->_vm_list[i].name, sizeof(instance->_vm_list[i].name),
+                           vms[i].vm_name ? vms[i].vm_name : "");
+                instance->_vm_list[i].is_default = vms[i].is_default;
+            }
+            instance->_vm_list_count = count;
+        }
+        muse_vm_cached_vm(instance->_vm_list_preferred, sizeof(instance->_vm_list_preferred));
+        instance->_vm_list_dirty = true;
+        xSemaphoreGive(instance->_state_mutex);
+    }
+    if (fetched > 0) {
+        vm_list_free(vms, fetched);
+    }
+    instance->_vm_fetch_running.store(false);
+    vTaskDelete(nullptr);
+}
+
 // ---- Realtime voice calls (Phase 4.1) ----
 
 void MuseApp::startCall()
@@ -2849,6 +3066,12 @@ void MuseApp::uiHoldCallback(void *user_data)
     ControlEvent event = {};
     event.type = ControlEventType::HoldPressed;
     instance->postControlEvent(event);
+}
+
+void MuseApp::uiSettingsCallback(void *user_data)
+{
+    // A pure UI swap on the LVGL task: no control event needed.
+    static_cast<MuseApp *>(user_data)->showSettings();
 }
 
 void MuseApp::audioPreemptCallback(audio_client_handle_t client, void *user_ctx)

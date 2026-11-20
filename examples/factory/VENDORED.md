@@ -526,7 +526,11 @@ the wake-word glue (`muse_wakeword_glue`, Phase 4.2), the Link
 lifecycle (`MuseLink` class + the `led_status` shim in
 `muse_led_status.cpp`, Phase 4.3) and the downloaded-image overlay in
 MuseUi (full-screen lv_image over the avatar, PSRAM RGB565 buffer,
-dismissed by a tap, a talk or display.show_animation).
+dismissed by a tap, a talk or display.show_animation), and the
+settings page (`MuseSettingsUi`, Phase 4.4 — VM picker, token status,
+wake-word switch, sign-out; the VM picker is factory-new, the SDK has
+only a free-text VM ID row, and sign-out unpairs Muse without
+forgetting Wi-Fi or restarting, unlike the SDK's Reset pairing).
 
 ## Provisioning interface
 
@@ -593,11 +597,12 @@ saved, 19% of the 14 MiB app partition free.
 links on ESP-IDF v6.1.1 (`idf.py set-target esp32p4`, then `make -j2`
 in `build/` — `idf.py` has no `-j` flag in v6.1 and ninja is not
 installed, so the build uses Unix Makefiles). `esp-brookesia.bin` is
-0xba8ec0 bytes (12,226,240) against a 0xe00000 (14 MiB) app partition —
+0xbab860 bytes (12,236,896) against a 0xe00000 (14 MiB) app partition —
 17% free, after the USB Screen removal, the avatar port, the Phase 4.1
-realtime calls, the Phase 4.2 wake word and the Phase 4.3 Link session
-(was 0xb9a9e0 / 12,167,648, 17% free, after the wake word; Link added
-58,592 bytes — the vendored session + image downloader + glue). DIRAM
+realtime calls, the Phase 4.2 wake word, the Phase 4.3 Link session
+and the Phase 4.4 settings page (was 0xba8ec0 / 12,226,240, 17% free,
+after Link; the settings page added 10,656 bytes — the round_ui page,
+the VM picker and the fetch worker). DIRAM
 267,346 / 655,360 (40.79%) at Phases 0-3. Build #10 notes: the
 `muse_avatar` component's `file(GLOB ... CONFIGURE_DEPENDS ...)`
 failed configure — ESP-IDF includes component CMakeLists in script
@@ -629,7 +634,18 @@ and `commandCallback` (1,032 B), the MuseUi image overlay
 factory LVGL rejects it — add flags one call at a time; and
 `muse_account_api.h` has no `extern "C"` guard, so a C++ consumer
 must wrap the include (the SDK's own `muse_chat_session.cpp` does).
-Items marked RESOLVED were
+`nm` on the build #14 ELF confirms the settings page is linked in:
+`MuseSettingsUi::create` (1,114 B) / `refresh` (560 B) / `setVmList`
+(612 B) / `showVmPicker` / `knob`, `MuseUi::gearEventCallback`,
+`MuseApp::refreshSettings` (490 B) / `vmFetchTaskEntry` (478 B) /
+`fetchVmList`, `vm_api_fetch_vms` (1,152 B) and
+`muse_vm_set_preferred_vm` (`showSettings`/`hideSettings`/
+`openVmPicker` were inlined). Build #14 notes: `strncpy` trips
+`-Wstringop-truncation` (an error here) — the codebase's `copyString`
+(`snprintf`) is the safe copy; and `lv_event_get_target` returns
+`void*` in this LVGL, so a C++ switch handler reads the state off
+`lv_event_get_current_target_obj` instead (the SDK's C code passes the
+`void*` straight through). Items marked RESOLVED were
 settled by the integrated build. Everything below that is not marked
 RESOLVED is a runtime-on-hardware question, not a compile question.
 

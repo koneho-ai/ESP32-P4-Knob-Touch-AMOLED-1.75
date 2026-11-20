@@ -154,6 +154,34 @@ credentials. See `../VENDORED.md` (the `muse_link` section) for the
 vendored files and the limits (two simultaneous Noise+TLS sessions,
 JPEG peripheral contention with Gallery, no battery in device.health).
 
+## Settings
+
+A gear in the top right of the main view opens the settings page
+(Phase 4.4), built with the factory Settings app's round_ui kit; the
+knob scrolls it while it is open, and back returns to the main view
+before it closes the app. It mirrors the SDK's Hatch page where the
+factory has an equivalent:
+
+- Status: paired or not, the voice session's state, and whether Link
+  is connected.
+- VM: the preferred VM if one is set, else the VM the session last
+  connected to, else "Default". Tapping it opens the picker — a
+  "Default VM" row plus one row per VM from the account, the effective
+  one checked. Picking a VM stores the preference and reconnects both
+  sessions with it. (The SDK has no picker, only a free-text VM ID
+  row; the picker is new work on `vm_api_fetch_vms`.)
+- Device token: "Set" or "Not set" — presence only, never the token.
+- Server: the provisioned host, or "Default".
+- Test connection: the SDK's `muse_hatch_test`.
+- Wake word switch, with the SDK's note: 'Listens for "Hey Muse" so
+  you can start a voice note without holding the talk button.' The
+  switch is the opt-in the wake word needs; a remote
+  `wakeword.disable` (Link) turns it off and the switch follows.
+- Sign out: a confirmation dialog, then the app unpairs the same way a
+  revoked token does. Unlike the SDK's "Reset pairing" this does not
+  forget Wi-Fi or restart — Wi-Fi belongs to the launcher's Settings
+  app, and the device stays on.
+
 ## The avatar
 
 The screen shows the SDK's animated avatar face, not the factory
@@ -196,6 +224,8 @@ MuseApp (this component)
                  session, command dispatch, credential worker
   muse_led_status.cpp  led_status shim for the Muse backend: Link's
                  image commands draw through the MuseUi overlay
+  MuseSettingsUi.cpp  Settings page (factory-new): VM picker, token
+                 status, wake-word switch, sign-out (round_ui kit)
   assets/        Home-screen icon (112x112 ARGB8888, bunny motif)
 ../muse_avatar   Vendored SDK avatar renderer (muse_pixel.c, happy_anim)
 ../muse_link     Vendored SDK Link session (noise_control, image_fetch,
@@ -231,7 +261,7 @@ duplicate to stereo → `audio_client_write`.
   streaming path exists in the same file behind `VOICE_NOTE=0`.
 - **Wake word is visible-only and opt-in.** "Hey Muse" works only
   while the app is on screen and only after the settings-page switch
-  is turned on (see "Wake word" above). No background listening.
+  is turned on (see "Settings" above). No background listening.
 - **Calls are half-duplex, hands-free only.** No echo cancellation, no
   push-to-talk call (see "Realtime voice calls" above).
 - **Link is visible-only.** The agent's commands work only while the

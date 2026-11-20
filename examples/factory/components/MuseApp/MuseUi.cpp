@@ -359,7 +359,9 @@ bool MuseUi::create(
     ActionCallback action_callback,
     void *action_context,
     ActionCallback hold_callback,
-    void *hold_context
+    void *hold_context,
+    ActionCallback settings_callback,
+    void *settings_context
 )
 {
     destroyView();
@@ -370,6 +372,8 @@ bool MuseUi::create(
     _action_context = action_context;
     _hold_callback = hold_callback;
     _hold_context = hold_context;
+    _settings_callback = settings_callback;
+    _settings_context = settings_context;
 
     // Black, like the SDK's face tile: the avatar's canvas is black, and a
     // different background would show as a square around the character.
@@ -494,6 +498,22 @@ bool MuseUi::create(
     lv_label_set_long_mode(_hint_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(_hint_label, _hint);
 
+    // A gear in the top right opens the settings page (Phase 4.4).
+    // Created before the image overlay, so a downloaded image covers it
+    // (a tap then dismisses the image instead of opening settings).
+    _gear = lv_obj_create(_root);
+    lv_obj_remove_style_all(_gear);
+    lv_obj_set_size(_gear, kGearPx, kGearPx);
+    lv_obj_set_pos(_gear, kGearX, kGearY);
+    lv_obj_add_flag(_gear, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *gear_label = lv_label_create(_gear);
+    lv_label_set_text(gear_label, LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_font(gear_label, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(gear_label, lv_color_hex(kColorDim), LV_PART_MAIN);
+    lv_obj_center(gear_label);
+    lv_obj_add_event_cb(_gear, gearEventCallback, LV_EVENT_SHORT_CLICKED, this);
+    lv_obj_add_event_cb(_gear, gearEventCallback, LV_EVENT_LONG_PRESSED, this);
+
     // A downloaded image (Link display.*): over everything on the screen,
     // dismissed by a tap. Created last so it sits on top; hidden until the
     // first rectangle arrives (imageSync unhides it on the frame tick).
@@ -548,6 +568,7 @@ void MuseUi::destroyView()
     }
     _ring = nullptr;
     _avatar = nullptr;
+    _gear = nullptr;
     _image = nullptr;
     _state_label = nullptr;
     _caption = nullptr;
@@ -794,6 +815,20 @@ void MuseUi::imageEventCallback(lv_event_t *event)
     // it starts a call, and the call hides the image.
     lv_event_stop_bubbling(event);
     instance->imageHideLocked();
+}
+
+void MuseUi::gearEventCallback(lv_event_t *event)
+{
+    auto *instance = static_cast<MuseUi *>(lv_event_get_user_data(event));
+    if (!instance) {
+        return;
+    }
+    // Both the tap and the long press stop here: the gear must never
+    // reach the root's SHORT_CLICKED (talk) or LONG_PRESSED (call).
+    lv_event_stop_bubbling(event);
+    if (lv_event_get_code(event) == LV_EVENT_SHORT_CLICKED && instance->_settings_callback) {
+        instance->_settings_callback(instance->_settings_context);
+    }
 }
 
 void MuseUi::applyMode()

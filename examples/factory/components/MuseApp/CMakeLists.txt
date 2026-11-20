@@ -9,6 +9,7 @@ set(PROJ_SRCS_CPP
     "MuseClient.cpp"
     "MuseUi.cpp"
     "MuseLink.cpp"
+    "MuseSettingsUi.cpp"
     "muse_led_status.cpp"
     "muse_wakeword_glue.cpp"
 )

@@ -16,6 +16,7 @@
 #include "muse_ble_pairing.h"
 #include "MuseClient.hpp"
 #include "MuseLink.hpp"
+#include "MuseSettingsUi.hpp"
 #include "MuseUi.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -39,7 +40,11 @@ namespace esp_brookesia::apps {
  * commands — display.draw_url/draw_file, display.show_animation,
  * voice.configure, wakeword.disable — and follows the same visibility:
  * it starts with the voice session when the app is visible and stops on
- * hide; there is no always-on connection.
+ * hide; there is no always-on connection. A gear in the top right opens
+ * the settings page (Phase 4.4): VM picker, token status, the wake-word
+ * switch and sign-out, built with the factory Settings app's round_ui
+ * kit; the knob scrolls it while it is open, and back returns to the
+ * main view before it closes the app.
  *
  * Lifecycle: the session starts lazily on the first AppVisible (the app
  * costs nothing until opened), disconnects on AppHidden, and releases the
@@ -130,6 +135,9 @@ private:
         WakeCancelled,  // an armed wake was cancelled; clear the prompt
         LinkUnpaired,   // server sent node.unpaired: unpair like TokenRevoked
         LinkAuthFailed, // Link needs fresh VM credentials: refresh the token
+        VmPicked,       // text: the VM id from the picker ("" = the account's default)
+        TestConnectionRequested, // the settings page's Test connection button
+        SignOutRequested, // the settings page's Sign out, confirmed: unpair like TokenRevoked
         Shutdown,
     };
 
@@ -148,6 +156,7 @@ private:
     static constexpr int PLAYBACK_TASK_STACK_SIZE = 16 * 1024;
     static constexpr int CALL_TASK_STACK_SIZE = 16 * 1024;
     static constexpr int REFRESH_TASK_STACK_SIZE = 8 * 1024;
+    static constexpr int VM_FETCH_TASK_STACK_SIZE = 8 * 1024;
 
     static MuseApp *_instance;
 
@@ -156,6 +165,7 @@ private:
     MuseUi *_ui = nullptr;
     MuseClient *_client = nullptr;
     MuseLink *_link = nullptr;
+    MuseSettingsUi *_settings = nullptr;
 
     SemaphoreHandle_t _state_mutex = nullptr;
     SemaphoreHandle_t _lifecycle_mutex = nullptr;
@@ -245,6 +255,16 @@ private:
     char _error_detail[128] = {};
     char _toast[64] = {};  // Applied by refreshUi (LVGL task); see showToastSoon
 
+    // VM picker (Phase 4.4): the fetch worker's snapshot, under
+    // _state_mutex. _vm_list_dirty is set by the worker and cleared by
+    // refreshUi when it hands the list to the picker.
+    MuseSettingsUi::VmEntry _vm_list[MuseSettingsUi::kMaxVms] = {};
+    int _vm_list_count = 0;
+    bool _vm_list_error = false;
+    bool _vm_list_dirty = false;
+    char _vm_list_preferred[128] = {};
+    std::atomic<bool> _vm_fetch_running{false};
+
     void createUi();
     void destroyUi();
     void refreshUi();
@@ -331,6 +351,21 @@ private:
     void stopLink();
     void restartLink();
 
+    // ---- Settings page (Phase 4.4) ----
+    // showSettings/hideSettings run on the LVGL task (from the gear tap,
+    // the back pill, and back()): they swap the main view and the
+    // settings page, both children of _page_root. refreshSettings runs
+    // from refreshUi on the same task. The VM list is fetched on a
+    // worker task (fetch_vms is blocking HTTPS): it fills _vm_list under
+    // _state_mutex and sets _vm_list_dirty; refreshUi hands the snapshot
+    // to the picker. The worker never touches LVGL objects.
+    void showSettings();
+    void hideSettings();
+    void refreshSettings();
+    void openVmPicker();
+    void fetchVmList();
+    static void vmFetchTaskEntry(void *arg);
+
     // ---- Realtime voice calls (Phase 4.1) ----    // startCall runs on the control task; callAudio is the dedicated call
     // task (the SDK's run_call): one 10 ms pass reads the mic, drains call
     // events, feeds gated mic audio, reads reply audio and writes it. It
@@ -362,6 +397,7 @@ private:
     static void uiTimerCallback(lv_timer_t *timer);
     static void uiActionCallback(void *context);
     static void uiHoldCallback(void *context);
+    static void uiSettingsCallback(void *context);
     static void audioPreemptCallback(audio_client_handle_t client, void *user_ctx);
     static void knobCallback(int steps, void *user_ctx);
     static MuseUi::Mode uiMode(State state);

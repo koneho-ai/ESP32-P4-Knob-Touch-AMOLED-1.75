@@ -40,11 +40,13 @@ namespace esp_brookesia::apps {
  * inverted, so tap-to-talk stays the primary path. A downloaded image
  * (Link display.*, Phase 4.3) covers the whole screen over the avatar
  * until a tap, a talk or display.show_animation dismisses it; a tap on
- * the image stops at SHORT_CLICKED so it never starts a talk.
+ * the image stops at SHORT_CLICKED so it never starts a talk. A gear
+ * button in the top right opens the settings page (Phase 4.4); its tap
+ * and its long press both stop there, so the gear never talks or calls.
  * Deliberate deviations
  * from the SDK: no volume swipe (the knob is the volume control), no
- * speaker/mute button, no settings or latest-reply tile (the Brookesia
- * launcher owns navigation), and one caption box for both the user
+ * speaker/mute button, no latest-reply tile (the Brookesia launcher owns
+ * navigation), and one caption box for both the user
  * transcript and the reply page (the SDK has a separate live-caption line;
  * the two boxes would overlap here). The state label uses Montserrat 16 —
  * the factory LVGL has no Unscii, which the SDK uses.
@@ -99,7 +101,9 @@ public:
         ActionCallback action_callback,
         void *action_context,
         ActionCallback hold_callback = nullptr,
-        void *hold_context = nullptr
+        void *hold_context = nullptr,
+        ActionCallback settings_callback = nullptr,
+        void *settings_context = nullptr
     );
     void destroy();
 
@@ -158,6 +162,12 @@ private:
     static constexpr int kStateY = 40;
     static constexpr int kHintY = 442;
     static constexpr int kHintW = 200;
+    // Settings gear: 40x40 at top-right, centred (335, 60) — inside the
+    // ring (outer corner 228 px from the centre, ring radius 229) and
+    // clear of the centred state label.
+    static constexpr int kGearPx = 40;
+    static constexpr int kGearX = 315;
+    static constexpr int kGearY = 40;
     static constexpr int kAnswerMs = 300;         // Muse making room for a reply, and back
     static constexpr uint32_t kToastMs = 1200;
     static constexpr float kHappySecs = 1.6f;     // SDK HAPPY_SECS
@@ -195,11 +205,13 @@ private:
     static void rootHoldCallback(lv_event_t *event);
     static void avatarEventCallback(lv_event_t *event);
     static void imageEventCallback(lv_event_t *event);
+    static void gearEventCallback(lv_event_t *event);
     static void moveAnimCallback(void *var, int32_t t);
 
     lv_obj_t *_root = nullptr;
     lv_obj_t *_ring = nullptr;
     lv_obj_t *_avatar = nullptr;
+    lv_obj_t *_gear = nullptr;   // settings entry, top right
     lv_obj_t *_image = nullptr;   // downloaded image overlay, over everything
     lv_image_dsc_t _image_dsc = {};
     uint16_t *_image_buf = nullptr;   // 466x466 RGB565 in PSRAM (434,512 bytes)
@@ -217,6 +229,8 @@ private:
     void *_action_context = nullptr;
     ActionCallback _hold_callback = nullptr;
     void *_hold_context = nullptr;
+    ActionCallback _settings_callback = nullptr;
+    void *_settings_context = nullptr;
     const lv_font_t *_text_font = nullptr;
 
     Mode _mode = Mode::Offline;
