@@ -20,11 +20,20 @@
 #define USB_TASK_STACK      4096
 #define USB_TASK_PRIORITY   5
 
+/* HID instances follow the interface order in usb_descriptors.c */
+#define HID_INSTANCE_KEYBOARD   0
+#define HID_INSTANCE_CONSUMER   1
+
 static const char *TAG = "usb_service";
 
 static usb_phy_handle_t s_phy;
 static bool s_stack_ready;
-static usb_service_mode_t s_mode = USB_SERVICE_MODE_OFF;
+/* The two USB functions are independent: either may run without the
+ * other, and the stack stays attached while at least one is active.
+ * usb_service_get_mode() reports SD_DRIVE whenever the drive is active
+ * (even with HID), so the Settings storage page keeps working. */
+static bool s_hid_active;
+static bool s_drive_active;
 
 /* Guards s_card against usb_service_stop() while the USB task serves a sector request. */
 static SemaphoreHandle_t s_card_lock;
@@ -66,7 +75,7 @@ static esp_err_t usb_stack_start(void)
 
 esp_err_t usb_service_start_sd_drive(void)
 {
-    ESP_RETURN_ON_FALSE(s_mode == USB_SERVICE_MODE_OFF, ESP_ERR_INVALID_STATE, TAG, "USB is busy");
+    ESP_RETURN_ON_FALSE(!s_drive_active, ESP_ERR_INVALID_STATE, TAG, "Drive is already active");
     if (!s_card_lock) {
         s_card_lock = xSemaphoreCreateMutex();
         ESP_RETURN_ON_FALSE(s_card_lock, ESP_ERR_NO_MEM, TAG, "Create lock failed");
@@ -79,7 +88,7 @@ esp_err_t usb_service_start_sd_drive(void)
     s_card = card;
     s_ejected = false;
     xSemaphoreGive(s_card_lock);
-    s_mode = USB_SERVICE_MODE_SD_DRIVE;
+    s_drive_active = true;
 
     esp_err_t ret = usb_stack_start();
     if (ret != ESP_OK) {
@@ -92,37 +101,103 @@ esp_err_t usb_service_start_sd_drive(void)
 
 esp_err_t usb_service_stop(void)
 {
-    if (s_mode == USB_SERVICE_MODE_OFF) {
+    if (!s_drive_active) {
         return ESP_OK;
     }
-    if (s_stack_ready) {
-        tud_disconnect();
-    }
-
     // Wait for an in-flight sector transfer, then stop serving the card.
     xSemaphoreTake(s_card_lock, portMAX_DELAY);
     s_card = NULL;
     xSemaphoreGive(s_card_lock);
-    s_mode = USB_SERVICE_MODE_OFF;
+    s_drive_active = false;
 
-    ESP_LOGI(TAG, "USB detached");
+    // The host only loses the device when HID is not keeping it attached.
+    if (!s_hid_active && s_stack_ready) {
+        tud_disconnect();
+    }
+
+    ESP_LOGI(TAG, "microSD drive detached");
     return storage_sd_export_end();
+}
+
+esp_err_t usb_service_start_hid(void)
+{
+    if (s_hid_active) {
+        return ESP_OK;
+    }
+    s_hid_active = true;
+    esp_err_t ret = usb_stack_start();
+    if (ret != ESP_OK) {
+        s_hid_active = false;
+        return ret;
+    }
+    ESP_LOGI(TAG, "HID keyboard attached");
+    return ESP_OK;
+}
+
+esp_err_t usb_service_stop_hid(void)
+{
+    if (!s_hid_active) {
+        return ESP_OK;
+    }
+    s_hid_active = false;
+    if (!s_drive_active && s_stack_ready) {
+        tud_disconnect();
+    }
+    ESP_LOGI(TAG, "HID keyboard detached");
+    return ESP_OK;
+}
+
+bool usb_service_hid_active(void)
+{
+    return s_hid_active;
 }
 
 usb_service_mode_t usb_service_get_mode(void)
 {
-    return s_mode;
+    if (s_drive_active) {
+        return USB_SERVICE_MODE_SD_DRIVE;
+    }
+    if (s_hid_active) {
+        return USB_SERVICE_MODE_HID;
+    }
+    return USB_SERVICE_MODE_OFF;
 }
 
 usb_drive_status_t usb_service_get_drive_status(void)
 {
-    if (s_mode != USB_SERVICE_MODE_SD_DRIVE) {
+    if (!s_drive_active) {
         return USB_DRIVE_STATUS_OFF;
     }
     if (s_ejected) {
         return USB_DRIVE_STATUS_EJECTED;
     }
     return tud_mounted() ? USB_DRIVE_STATUS_CONNECTED : USB_DRIVE_STATUS_WAITING_HOST;
+}
+
+bool usb_hid_is_ready(void)
+{
+    return s_hid_active && s_stack_ready && tud_mounted();
+}
+
+bool usb_hid_keyboard_report(uint8_t modifier, const uint8_t keys[6])
+{
+    if (!usb_hid_is_ready() || !tud_hid_n_ready(HID_INSTANCE_KEYBOARD)) {
+        return false;
+    }
+    uint8_t report[8] = {modifier, 0, 0, 0, 0, 0, 0, 0};
+    if (keys) {
+        memcpy(&report[2], keys, 6);
+    }
+    return tud_hid_n_report(HID_INSTANCE_KEYBOARD, 0, report, sizeof(report));
+}
+
+bool usb_hid_consumer_report(uint16_t usage)
+{
+    if (!usb_hid_is_ready() || !tud_hid_n_ready(HID_INSTANCE_CONSUMER)) {
+        return false;
+    }
+    uint8_t report[2] = {(uint8_t)(usage & 0xFF), (uint8_t)(usage >> 8)};
+    return tud_hid_n_report(HID_INSTANCE_CONSUMER, 0, report, sizeof(report));
 }
 
 /* ---------------------------------------------------------------------------

@@ -6,9 +6,10 @@
 
 #pragma once
 
-/* TinyUSB configuration for the microSD mass-storage drive. The vendor,
- * HID and audio classes the Windows-only extended screen used were
- * removed with it on the muse-app branch. */
+/* TinyUSB configuration for the microSD mass-storage drive and the
+ * macropad's USB HID keyboard + consumer control. The vendor and audio
+ * classes the Windows-only extended screen used were removed with it on
+ * the muse-app branch. */
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,10 @@ extern "C" {
 /* microSD drive */
 #define CFG_TUD_MSC                 1
 #define CFG_TUD_MSC_EP_BUFSIZE      (32 * 1024)
+
+/* Macropad HID: instance 0 is the keyboard, instance 1 is consumer control */
+#define CFG_TUD_HID                 2
+#define CFG_TUD_HID_EP_BUFSIZE      64
 
 #ifdef __cplusplus
 }
