@@ -18,6 +18,12 @@ smiley's mouth is a filled grin, the husky has a black cap + freckles
 has big glasses + big eyes, the paw pad is a dome, and the mic is a
 hollow outline.
 
+Second detail pass 2026-11-21: the redraw was compared against the
+photo key-by-key on a side-by-side sheet and all 9 were redrawn AGAIN,
+bigger — the earlier attempts drew the art far too small inside the
+canvas and too thin. Rule of thumb: the art should span ~85% of the
+canvas in both directions.
+
 Regenerate: python3 tools/gen_icons.py
 Also writes /tmp/macropad_icons_preview.png (the 5x3 grid on keycap
 colors) for a visual check.
@@ -110,62 +116,65 @@ def tube(p0, pc, p1, r0, r1, fill, steps=28):
 # ---------------------------------------------------------------- icons
 
 def icon_ufo():
-    # Photo: a curved pod/bean tilted diagonal (fat rounded head at the
-    # top right, tapering tail at the bottom left), one small dot hole
-    # near the head, and a cluster of short horizontal speed dashes at
-    # the lower left. No dome, no lights.
+    # Photo: a FAT curved pod/bean, like a fat comma lying at a shallow
+    # angle (~25 deg) — a big round head at the right tapering to a
+    # rounded tail at the lower left, the belly sagging below the chord,
+    # one small dot hole near the top of the head, and a tight cluster
+    # of short horizontal speed dashes below the tail. No dome, no lights.
     img = canvas()
     d = ImageDraw.Draw(img)
-    # speed dashes, lower left, staggered 3 rows
-    for x0, x1, y in [(12, 34, 166), (38, 56, 166), (16, 38, 180),
-                      (42, 58, 180), (12, 32, 194), (36, 52, 194)]:
-        d.line([(x0, y), (x1, y)], fill=BROWN_DARK, width=7)
-    pod = tube((58, 172), (108, 142), (168, 80), 16, 27, BROWN_DARK)
+    # speed dashes, below the tail, 3 staggered rows of 2
+    for x0, x1, y in [(10, 30, 168), (34, 50, 168), (14, 34, 182),
+                      (38, 54, 182), (10, 28, 196), (32, 48, 196)]:
+        d.line([(x0, y), (x1, y)], fill=BROWN_DARK, width=8)
+    pod = tube((44, 150), (100, 156), (182, 84), 24, 38, BROWN_DARK)
     # the dot: a hole showing the keycap color through
-    punch(pod, lambda m: m.ellipse([143, 89, 157, 103], fill=0))
+    punch(pod, lambda m: m.ellipse([156, 84, 172, 100], fill=0))
     img = Image.alpha_composite(img, pod)
     return img
 
 
 def icon_bowl():
-    # Photo: a half-round bowl with a flat rim, a lumpy food mound with
-    # two kibble dots, and a big bone leaning diagonally against the
-    # bowl's lower left, overlapping its edge.
+    # Photo: a WIDE shallow bowl with a flat rim, a lumpy food mound
+    # with two kibble dots on top, and a big bone leaning diagonally
+    # against the bowl's lower left — most of the bone is OUTSIDE the
+    # bowl's silhouette, clearly visible, not hidden behind it.
     img = canvas()
     d = ImageDraw.Draw(img)
-    # bowl body: bottom half of an ellipse, flat top at y=100
-    d.pieslice([52, 16, 180, 184], 0, 180, fill=GREY_DARK)
+    # bowl body: bottom half of an ellipse, flat top at y=98
+    d.pieslice([32, 28, 192, 168], 0, 180, fill=GREY_DARK)
     # rim bar, slightly wider than the body
-    d.rectangle([48, 96, 184, 112], fill=GREY_DARK)
-    # food mound: three merged bumps on the rim
-    for cx, cy, r in [(80, 96, 24), (112, 86, 28), (144, 98, 22)]:
+    d.rectangle([28, 92, 196, 110], fill=GREY_DARK)
+    # food mound: three merged bumps on the rim, middle tallest
+    for cx, cy, r in [(70, 88, 24), (112, 78, 28), (154, 90, 22)]:
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GREY_DARK)
     # kibble dots: holes showing the keycap color through
     punch(img, lambda m: (
-        m.ellipse([95, 89, 105, 99], fill=0),
-        m.ellipse([121, 97, 131, 107], fill=0),
+        m.ellipse([88, 78, 100, 90], fill=0),
+        m.ellipse([120, 86, 132, 98], fill=0),
     ))
     # bone, drawn centered then rotated 42 deg (top-left to bottom-right)
-    # and placed lower left
+    # and placed well left so most of it shows outside the bowl
     bone = canvas()
     db = ImageDraw.Draw(bone)
-    db.rectangle([68, 101, 156, 123], fill=GREY_DARK)
-    for cx, cy in [(70, 101), (70, 123), (154, 101), (154, 123)]:
+    db.rectangle([54, 101, 170, 123], fill=GREY_DARK)
+    for cx, cy in [(56, 101), (56, 123), (168, 101), (168, 123)]:
         db.ellipse([cx - 15, cy - 15, cx + 15, cy + 15], fill=GREY_DARK)
     bone = rotate_layer(bone, 42)
-    img = Image.alpha_composite(img, place(bone, -48, 38))
+    img = Image.alpha_composite(img, place(bone, -62, 30))
     return img
 
 
 def icon_smiley():
-    # Photo: white disc, two tall oval eyes set wide apart, and a wide
-    # FILLED grin — a half-disc with a flat top edge, not an arc.
+    # Photo: white disc, two small ROUND dot eyes set wide apart, and a
+    # WIDE shallow FILLED grin — a half-disc with a flat top edge, not
+    # an arc. The grin spans most of the face width.
     img = canvas()
     d = ImageDraw.Draw(img)
-    d.ellipse([26, 26, 198, 198], fill=WHITE)
-    d.ellipse([68, 66, 94, 104], fill=DARK)
-    d.ellipse([130, 66, 156, 104], fill=DARK)
-    d.pieslice([66, 56, 158, 168], 0, 180, fill=DARK)
+    d.ellipse([36, 36, 188, 188], fill=WHITE)
+    d.ellipse([77, 81, 95, 99], fill=DARK)
+    d.ellipse([129, 81, 147, 99], fill=DARK)
+    d.pieslice([62, 76, 162, 160], 0, 180, fill=DARK)
     return img
 
 
@@ -190,118 +199,122 @@ def icon_mute():
 
 
 def icon_husky():
-    # Photo: a wide white face with a black cap across the top whose
-    # lower edge dips at the sides and in the center (husky mask),
-    # pointy ears with white inners at the top corners, small black dot
-    # eyes, three freckle dots on each cheek, a black nose, and a pink
-    # tongue hanging down. No panda eye patches.
+    # Photo: a WIDE white face spanning the full keycap, a black cap
+    # across the top whose lower edge dips at the sides and in the
+    # center (husky mask), big pointy ears with white inners at the top
+    # corners, small black dot eyes, three tiny freckle dots on each
+    # cheek, a small black nose, and a SMALL pink tongue below it.
+    # No panda eye patches.
     img = canvas()
     d = ImageDraw.Draw(img)
-    # face: a wide rounded shape, flat-ish bottom, spanning the keycap
-    d.rounded_rectangle([22, 54, 202, 204], radius=58, fill=WHITE)
+    # face: wide, flat-ish bottom, spanning the keycap
+    d.rounded_rectangle([14, 58, 210, 206], radius=56, fill=WHITE)
     # ears (drawn over the face's top corners; the cap covers the bases)
-    d.polygon([(30, 84), (48, 18), (98, 64)], fill=DARK)
-    d.polygon([(194, 84), (176, 18), (126, 64)], fill=DARK)
-    d.polygon([(44, 70), (54, 34), (82, 60)], fill=WHITE)
-    d.polygon([(180, 70), (170, 34), (142, 60)], fill=WHITE)
-    # black cap: top follows the head curve, lower edge dips at the
-    # sides and in the center, rising over each eye
+    d.polygon([(12, 92), (30, 16), (96, 66)], fill=DARK)
+    d.polygon([(212, 92), (194, 16), (128, 66)], fill=DARK)
+    d.polygon([(28, 74), (38, 32), (80, 60)], fill=WHITE)
+    d.polygon([(196, 74), (186, 32), (144, 60)], fill=WHITE)
+    # black cap: top follows the head curve, lower edge dips DEEPEST at
+    # the sides, rising over each eye, with only a shallow dip in the
+    # center
     d.polygon([
-        (22, 140), (22, 80), (56, 56), (112, 50), (168, 56), (202, 80),
-        (202, 140), (176, 130), (154, 88), (134, 100), (112, 112),
-        (90, 100), (70, 88), (48, 130),
+        (14, 150), (14, 84), (52, 60), (112, 54), (172, 60), (210, 84),
+        (210, 150), (186, 146), (160, 96), (140, 106), (112, 110),
+        (84, 106), (64, 96), (38, 146),
     ], fill=DARK)
     # eyes: small black dots with a white highlight
-    for cx in (78, 146):
-        d.ellipse([cx - 7, 111, cx + 7, 125], fill=DARK)
-        d.ellipse([cx - 5, 113, cx - 1, 117], fill=WHITE)
+    for cx in (80, 144):
+        d.ellipse([cx - 7, 115, cx + 7, 129], fill=DARK)
+        d.ellipse([cx - 5, 117, cx - 1, 121], fill=WHITE)
     # cheek freckles: three tiny dots per cheek
-    for cx, cy in [(54, 138), (62, 146), (50, 146),
-                   (170, 138), (162, 146), (174, 146)]:
-        d.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=DARK)
-    # nose: black rounded oval, wider than tall
-    d.ellipse([100, 136, 124, 152], fill=DARK)
+    for cx, cy in [(58, 142), (66, 150), (52, 150),
+                   (166, 142), (158, 150), (172, 150)]:
+        d.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=DARK)
+    # nose: small black rounded oval, wider than tall
+    d.ellipse([100, 139, 124, 155], fill=DARK)
     # mouth line down from the nose
-    d.line([(112, 152), (112, 160)], fill=DARK, width=4)
-    # tongue: pink, rounded, hanging below the mouth
-    d.rounded_rectangle([99, 160, 125, 194], radius=11, fill=PINK,
+    d.line([(112, 154), (112, 162)], fill=DARK, width=4)
+    # tongue: small, pink, rounded, below the mouth
+    d.rounded_rectangle([100, 162, 124, 187], radius=10, fill=PINK,
                         outline=PINK_DARK, width=3)
-    d.line([(112, 166), (112, 186)], fill=PINK_DARK, width=3)
+    d.line([(112, 168), (112, 182)], fill=PINK_DARK, width=3)
     return img
 
 
 def icon_df():
-    # Photo: a hexagon outline with the DF mark inside — the D is a
-    # block letter with the dog-head silhouette in its bowl (same mark
-    # as the center knob), the F is a block letter, and two chevrons
-    # run off past the hexagon's right vertex.
+    # Photo: a WIDE hexagon outline (wider than tall) with the DF mark
+    # inside — the D is a big block letter with the dog-head silhouette
+    # in its bowl (same mark as the center knob), the F is a big block
+    # letter, and two chevrons sit to the right, the second just past
+    # the hexagon's right vertex.
     img = canvas()
     d = ImageDraw.Draw(img)
-    # hexagon outline, flat top/bottom, pointed sides
-    hex_pts = [(48, 40), (132, 40), (174, 112), (132, 184), (48, 184),
-               (6, 112)]
-    d.line(hex_pts + [hex_pts[0]], fill=NAVY, width=12, joint="curve")
+    # hexagon outline, flat top/bottom, pointed sides, wider than tall
+    hex_pts = [(24, 42), (124, 42), (202, 112), (124, 182), (24, 182),
+               (4, 112)]
+    d.line(hex_pts + [hex_pts[0]], fill=NAVY, width=14, joint="curve")
     # D and F drawn as block shapes on their own layer so the dog head
     # can be cut into the D's bowl
     letters = canvas()
     dl = ImageDraw.Draw(letters)
     # D: left bar + right half-disc
-    dl.rectangle([40, 66, 66, 144], fill=NAVY)
-    dl.pieslice([40, 66, 118, 144], 270, 90, fill=NAVY)
+    dl.rectangle([32, 70, 60, 154], fill=NAVY)
+    dl.pieslice([32, 70, 114, 154], 270, 90, fill=NAVY)
     # D's bowl: punch the counter out (transparent = keycap color)
     punch(letters, lambda m: (
-        m.rectangle([56, 82, 66, 128], fill=0),
-        m.pieslice([56, 82, 102, 128], 270, 90, fill=0),
+        m.rectangle([48, 86, 60, 138], fill=0),
+        m.pieslice([48, 86, 98, 138], 270, 90, fill=0),
     ))
     # dog head in the bowl, facing right: ear + head + snout
-    dl.polygon([(60, 94), (66, 80), (76, 93)], fill=NAVY)
-    dl.ellipse([58, 90, 86, 122], fill=NAVY)
-    dl.polygon([(82, 103), (94, 109), (82, 116)], fill=NAVY)
+    dl.polygon([(52, 98), (58, 84), (68, 96)], fill=NAVY)
+    dl.ellipse([50, 94, 82, 126], fill=NAVY)
+    dl.polygon([(78, 106), (90, 111), (78, 118)], fill=NAVY)
     # muzzle line across the dog's face: punch a smile curve out
-    punch(letters, lambda m: m.arc([58, 100, 94, 132], 20, 160, fill=0,
+    punch(letters, lambda m: m.arc([50, 104, 86, 136], 20, 160, fill=0,
                                    width=4))
     # F: vertical bar + top and middle bars
-    dl.rectangle([108, 66, 122, 144], fill=NAVY)
-    dl.rectangle([108, 66, 152, 80], fill=NAVY)
-    dl.rectangle([108, 98, 142, 112], fill=NAVY)
+    dl.rectangle([104, 70, 118, 154], fill=NAVY)
+    dl.rectangle([104, 70, 148, 84], fill=NAVY)
+    dl.rectangle([104, 102, 136, 116], fill=NAVY)
     img = Image.alpha_composite(img, letters)
-    # chevrons: the second runs past the hexagon's right vertex
-    for x in (148, 172):
-        d.line([(x, 64), (x + 26, 112), (x, 160)], fill=NAVY, width=13,
-               joint="curve")
+    # chevrons: the second past the hexagon's right vertex
+    d.line([(158, 76), (180, 112), (158, 148)], fill=NAVY, width=13,
+           joint="curve")
+    d.line([(180, 76), (208, 112), (180, 148)], fill=NAVY, width=13,
+           joint="curve")
     return img
 
 
 def icon_fox():
-    # Photo: tall pointy ears with white inners, a wide brown head, a
-    # white muzzle across the lower face, BIG round glasses with thick
-    # rims, big black eyes with white highlights, a small nose, and a
-    # wide pink tongue below it.
+    # Photo: big tall pointy ears with white inners at the top corners,
+    # a WIDE brown head, a wide white muzzle across the lower face, BIG
+    # round glasses with thick rims, big black eyes with white
+    # highlights, a small nose, and a SMALL pink tongue below it.
     img = canvas()
     d = ImageDraw.Draw(img)
     # ears
-    d.polygon([(48, 84), (64, 16), (108, 62)], fill=FOX_EAR)
-    d.polygon([(176, 84), (160, 16), (116, 62)], fill=FOX_EAR)
-    d.polygon([(62, 70), (70, 34), (96, 58)], fill=FOX_INNER)
-    d.polygon([(162, 70), (154, 34), (128, 58)], fill=FOX_INNER)
-    # head
-    d.ellipse([30, 44, 194, 196], fill=FOX_HEAD)
+    d.polygon([(24, 90), (42, 14), (106, 62)], fill=FOX_EAR)
+    d.polygon([(200, 90), (182, 14), (118, 62)], fill=FOX_EAR)
+    d.polygon([(40, 72), (50, 32), (90, 58)], fill=FOX_INNER)
+    d.polygon([(184, 72), (174, 32), (134, 58)], fill=FOX_INNER)
+    # head: wide
+    d.ellipse([20, 48, 204, 198], fill=FOX_HEAD)
     # white muzzle across the lower face
-    d.ellipse([48, 116, 176, 198], fill=WHITE)
+    d.ellipse([36, 118, 188, 202], fill=WHITE)
     # glasses: big thick-rimmed circles + bridge arch
-    for cx in (80, 144):
-        d.ellipse([cx - 32, 74, cx + 32, 138], outline=DARK, width=11)
-    d.arc([100, 92, 124, 114], 180, 360, fill=DARK, width=7)
+    for cx in (78, 146):
+        d.ellipse([cx - 36, 72, cx + 36, 144], outline=DARK, width=12)
+    d.arc([102, 94, 122, 114], 180, 360, fill=DARK, width=8)
     # eyes: big black circles with a white highlight
-    for cx in (80, 144):
-        d.ellipse([cx - 17, 89, cx + 17, 123], fill=DARK)
-        d.ellipse([cx - 11, 95, cx - 1, 105], fill=WHITE)
+    for cx in (78, 146):
+        d.ellipse([cx - 19, 89, cx + 19, 127], fill=DARK)
+        d.ellipse([cx - 13, 95, cx - 3, 105], fill=WHITE)
     # nose: small rounded triangle
-    d.polygon([(103, 139), (121, 139), (112, 152)], fill=DARK)
-    # tongue: wide, rounded, below the nose
-    d.rounded_rectangle([96, 154, 128, 190], radius=12, fill=PINK,
+    d.polygon([(103, 141), (121, 141), (112, 154)], fill=DARK)
+    # tongue: small, rounded, below the nose
+    d.rounded_rectangle([101, 156, 123, 182], radius=11, fill=PINK,
                         outline=PINK_DARK, width=3)
-    d.line([(112, 160), (112, 182)], fill=PINK_DARK, width=3)
+    d.line([(112, 162), (112, 178)], fill=PINK_DARK, width=3)
     return img
 
 
@@ -325,49 +338,52 @@ def icon_chat():
 
 
 def icon_paw():
-    # Photo: four toe beans in an arc — the middle two larger and
-    # vertical, the outer two smaller and tilted outward — over one
-    # large dome-shaped pad with a flat bottom.
+    # Photo: a BIG paw print filling the keycap — four large toe beans
+    # in an arc (the middle two larger and vertical, the outer two
+    # smaller and tilted outward) over one large dome-shaped pad with
+    # a flat bottom.
     img = canvas()
     d = ImageDraw.Draw(img)
     # middle toes: tall vertical ovals
-    d.ellipse([69, 58, 107, 108], fill=PAW_BROWN)
-    d.ellipse([117, 58, 155, 108], fill=PAW_BROWN)
+    d.ellipse([64, 48, 108, 112], fill=PAW_BROWN)
+    d.ellipse([116, 48, 160, 112], fill=PAW_BROWN)
     # outer toes: smaller, tilted outward (tops lean away from center)
     toe = canvas()
     dt = ImageDraw.Draw(toe)
-    dt.ellipse([98, 92, 126, 132], fill=PAW_BROWN)
-    img = Image.alpha_composite(img, place(rotate_layer(toe, 30), -58, -16))
-    img = Image.alpha_composite(img, place(rotate_layer(toe, -30), 58, -16))
-    # pad: a dome, flat bottom at y=195
+    dt.ellipse([92, 84, 132, 140], fill=PAW_BROWN)
+    img = Image.alpha_composite(img, place(rotate_layer(toe, 35), -64, -24))
+    img = Image.alpha_composite(img, place(rotate_layer(toe, -35), 64, -24))
+    # pad: a big dome, flat bottom at y=194
     d = ImageDraw.Draw(img)
-    d.pieslice([50, 125, 174, 265], 180, 360, fill=PAW_BROWN)
+    d.pieslice([40, 120, 184, 268], 180, 360, fill=PAW_BROWN)
     return img
 
 
 def icon_check():
-    # Photo: a dark rounded square with a light check, the check's
+    # Photo: a BIG dark rounded square filling the keycap, with a light
+    # check in the center — the check is smaller than the square, thin,
     # vertex just below center, short arm up-left, long arm up-right.
     img = canvas()
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([36, 36, 188, 188], radius=28, fill=GREEN_DARK)
-    d.line([(72, 118), (102, 148), (156, 80)], fill=(232, 232, 216, 255),
-           width=13, joint="curve")
+    d.rounded_rectangle([32, 32, 192, 192], radius=24, fill=GREEN_DARK)
+    d.line([(80, 120), (104, 146), (148, 90)], fill=(232, 232, 216, 255),
+           width=10, joint="curve")
     return img
 
 
 def icon_mic_mute():
-    # Photo: a HOLLOW mic — an outlined capsule, not a filled one —
-    # with a U-shaped holder, a stem and foot, and a thin diagonal
-    # slash from bottom left to top right.
+    # Photo: a TALL narrow HOLLOW mic — an outlined capsule, not a
+    # filled one — with a U-shaped holder hugging it, a stem and foot,
+    # and a thin diagonal slash at ~45 deg from bottom left to top
+    # right, extending past the mic on both ends.
     img = canvas()
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([88, 26, 136, 126], radius=24, outline=WHITE,
+    d.rounded_rectangle([86, 26, 138, 126], radius=26, outline=WHITE,
                         width=12)
-    d.arc([68, 80, 156, 180], 0, 180, fill=WHITE, width=11)
-    d.line([(112, 180), (112, 196)], fill=WHITE, width=11)
-    d.line([(88, 196), (136, 196)], fill=WHITE, width=11)
-    d.line([(36, 196), (194, 30)], fill=WHITE, width=9)
+    d.arc([70, 84, 154, 184], 0, 180, fill=WHITE, width=11)
+    d.line([(112, 184), (112, 198)], fill=WHITE, width=11)
+    d.line([(90, 198), (134, 198)], fill=WHITE, width=11)
+    d.line([(32, 198), (198, 34)], fill=WHITE, width=9)
     return img
 
 
