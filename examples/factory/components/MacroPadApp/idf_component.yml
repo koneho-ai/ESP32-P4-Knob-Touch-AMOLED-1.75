@@ -1,0 +1,8 @@
+version: 0.1.0
+dependencies:
+  brookesia_core:
+    public: true
+
+  # Same managed cJSON the factory project already uses (XiaozhiApp).
+  espressif/cjson:
+    version: "^1.7.19"

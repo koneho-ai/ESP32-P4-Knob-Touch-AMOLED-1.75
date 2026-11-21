@@ -532,6 +532,58 @@ wake-word switch, sign-out; the VM picker is factory-new, the SDK has
 only a free-text VM ID row, and sign-out unpairs Muse without
 forgetting Wi-Fi or restarting, unlike the SDK's Reset pairing).
 
+### `components/MacroPadApp/` — touchscreen macropad (2026-11-21, new, not vendored)
+
+A second Brookesia app alongside MuseApp: 15 touch keys in a 5x3 grid
+on the round display, styled like the user's macropad photo (keycap
+colors + icons redrawn by `tools/gen_icons.py` into
+`assets/macropad_icons.c`, LVGL 9 ARGB8888), sending real keystrokes
+over USB HID. The physical knob sends volume up/down only (the user's
+decision); the knob has no press switch on this board (only CW/CCW
+GPIOs), so there is no knob-press action. Key mappings live in
+`/sdcard/macropad/config.json` (cJSON): combo, consumer/media key,
+type-text (US layout) and macro actions (a sequence of steps with
+delays — this is how app-launch keys work, via Spotlight). Compiled-in
+defaults wire only play/pause and mute; everything else is
+unassigned. Mic mute is deliberately unassigned: macOS answers no HID
+usage for it (no consumer usage, and the Telephony-page mute is not a
+system mic mute on macOS). A sender task owns all HID traffic (taps
+and knob turns queue as jobs; macros execute there), so the LVGL task
+never blocks on USB. The config reloads on run/resume, when the card
+remounts after USB-drive use, and from the Reload button. See
+`components/MacroPadApp/README.md` for the full config format.
+Build #18 green on IDF v6.1.1: `esp-brookesia.bin` 12,499,984 bytes
+(0xbebc10), 15% free. Untested on hardware.
+
+Build fixes worth knowing: `LV_PART_MAIN | LV_STATE_PRESSED` is a
+hard error in C++ here (`-Werror=deprecated-enum-enum-conversion`) —
+pass `LV_STATE_PRESSED` alone (LV_PART_MAIN is 0), as the factory
+apps do. `LV_IMG_DECLARE` must sit at global scope, not inside the
+`esp_brookesia::apps` namespace — inside it the names mangle and the
+C-defined images fail to link.
+
+### USB HID: composite keyboard + consumer + MSC (2026-11-21)
+
+`app_services` now presents one composite device instead of
+MSC-only: HID keyboard (boot protocol, 8-byte reports) + HID
+consumer control (2-byte reports) + the microSD drive, all in a
+single configuration at both speeds (HID interrupt interval 7 at
+high speed = 8 ms, 10 at full speed). The PID changed to `0x4003`
+with the new configuration so hosts re-enumerate cleanly, and the
+product string is now "ESP32-P4 Knob". HID and the drive are
+independent: either may run without the other (`usb_service_start_hid`
+/ `usb_service_stop_hid`, `usb_service_start_sd_drive` /
+`usb_service_stop`), the stack stays attached while at least one is
+active, and `usb_service_get_mode()` still reports SD_DRIVE whenever
+the drive is active so the Settings storage page is unchanged. When
+the drive is off, the MSC interface reports medium-not-present. HID
+send primitives (`usb_hid_keyboard_report`,
+`usb_hid_consumer_report`) return false when the endpoint is busy;
+callers retry. TinyUSB callbacks: `tud_hid_descriptor_report_cb`
+(this TinyUSB version's name — not `tud_hid_descriptor_cb`),
+`get_report` STALLs (returns 0), `set_report` ignores LED output.
+`CFG_TUD_HID` is 2 (keyboard = instance 0, consumer = instance 1).
+
 ## Provisioning interface
 
 The BLE pairing component (`MuseBlePairing`, built by a sibling agent)

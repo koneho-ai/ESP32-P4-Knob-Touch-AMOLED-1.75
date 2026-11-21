@@ -44,6 +44,9 @@
 #if CONFIG_MUSE_APP_ENABLED
 #include "MuseApp.hpp"
 #endif
+#if CONFIG_MACROPAD_APP_ENABLED
+#include "MacroPadApp.hpp"
+#endif
 #include "esp_brookesia_app_calculator.hpp"
 #include "esp_heap_caps.h"
 #include <algorithm>
@@ -204,6 +207,10 @@ extern "C" void app_main(void)
 #if CONFIG_MUSE_APP_ENABLED
         auto muse_app = esp_brookesia::apps::MuseApp::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(muse_app), "Start Muse failed");
+#endif
+#if CONFIG_MACROPAD_APP_ENABLED
+        auto macropad_app = esp_brookesia::apps::MacroPadApp::requestInstance();
+        ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(macropad_app), "Start MacroPad failed");
 #endif
         auto app6 = esp_brookesia::apps::Settings::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(app6), "Start Settings failed");

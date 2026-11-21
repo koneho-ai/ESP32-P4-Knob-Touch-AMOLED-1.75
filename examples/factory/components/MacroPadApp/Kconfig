@@ -1,0 +1,11 @@
+menu "MacroPad Application"
+
+    config MACROPAD_APP_ENABLED
+        bool "Enable the macropad app"
+        default y
+        help
+            Installs the macropad app (15 touch keys + knob volume over
+            USB HID) on the home screen. Disable to leave the factory
+            firmware exactly as it was.
+
+endmenu
