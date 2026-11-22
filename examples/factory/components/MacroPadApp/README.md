@@ -29,23 +29,23 @@ physical knob sends volume up/down.
 
 Keys are numbered row-major, 0–14, left to right, top to bottom:
 
-| # | Icon | Cap color | Default action |
-|---|------|-----------|----------------|
-| 0 | `ufo` | orange `#B85C38` | unassigned |
-| 1 | `bowl` | beige `#B5AA9C` | unassigned |
-| 2 | `smiley` | black `#1C1C1C` | unassigned |
-| 3 | `play_pause` | black | Play/Pause (media key) |
-| 4 | `mute` | black | Mute (media key) |
-| 5 | `husky` | black | unassigned |
-| 6 | `df` | blue-grey `#9DB4B8` | unassigned |
-| 7 | `fox` | brown `#A97B50` | unassigned |
-| 8 | `globe` | black | unassigned |
-| 9 | `chat` | black | unassigned |
-| 10 | `paw` | tan `#C2A276` | unassigned |
-| 11 | `check` | green `#8A9A5B` | unassigned |
-| 12 | `mic_mute` | black | unassigned (see below) |
-| 13 | `mail` | black | unassigned |
-| 14 | `folder` | black | unassigned |
+| # | Icon | Default action |
+|---|------|----------------|
+| 0 | `ufo` | unassigned |
+| 1 | `bowl` | unassigned |
+| 2 | `smiley` | unassigned |
+| 3 | `play_pause` | Play/Pause (media key) |
+| 4 | `mute` | Mute (media key) |
+| 5 | `husky` | unassigned |
+| 6 | `df` | unassigned |
+| 7 | `fox` | unassigned |
+| 8 | `globe` | unassigned |
+| 9 | `chat` | unassigned |
+| 10 | `paw` | unassigned |
+| 11 | `check` | unassigned |
+| 12 | `mic_mute` | unassigned (see below) |
+| 13 | `mail` | unassigned |
+| 14 | `folder` | unassigned |
 
 Mic mute has no default on purpose: **macOS answers no HID usage
 for microphone mute.** There is no consumer-page mic-mute usage, and
@@ -68,8 +68,8 @@ the whole pad.
 {
   "version": 1,
   "keys": [
-    { "icon": "ufo", "color": "#B85C38", "action": null },
-    { "icon": "bowl", "color": "#B5AA9C", "label": "Food",
+    { "icon": "ufo", "action": null },
+    { "icon": "bowl", "label": "Food",
       "action": { "type": "macro", "steps": [
         { "combo": { "modifiers": ["gui"], "key": "space" } },
         { "delay_ms": 400 },
@@ -97,7 +97,6 @@ Rules:
   `play_pause`, `mute`, `husky`, `df`, `fox`, `globe`, `chat`, `paw`,
   `check`, `mic_mute`, `mail`, `folder`). Unknown names show no icon.
   `""` also means no icon (use with `label` for a text-only key).
-- `color`: keycap background as `#RRGGBB`.
 - `label`: short text (up to 15 chars) under the icon. The icon
   shifts up a little to make room.
 - `action`: `null` (or omitted) = unassigned. Otherwise one of the
@@ -182,7 +181,7 @@ treats those as brightness).
   task (all USB traffic runs there, so taps never block the UI) and
   the macro engine.
 - `MacroPadUi.{hpp,cpp}` — the grid, USB indicator, footer, reload
-  button. Grid geometry: 72×80 keys, 8 px gaps, grid at (37, 96).
+  button. Grid geometry: 72×72 keys, 8 px gaps, grid at (37, 99).
 - `MacroPadConfig.{hpp,cpp}` — defaults + the JSON parser (cJSON).
 - `MacroPadHid.{hpp,cpp}` — key/modifier/consumer name tables and
   the US-layout character map.

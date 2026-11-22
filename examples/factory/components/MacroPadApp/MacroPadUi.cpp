@@ -24,8 +24,9 @@ constexpr int kFooterY = 360;
 constexpr int kReloadY = 394;
 constexpr int kReloadW = 160;
 constexpr int kReloadH = 36;
-// The key face is the keycap photo, 72x72 in a 72x80 button (4px flat
-// color bands top and bottom). With a label the image zooms to 80% so
+// The key face is the keycap photo, 72x72, filling the square button.
+// The button itself carries no background color — the key is just the
+// photo on the dark screen. With a label the image zooms to 80% so
 // the text fits under it.
 constexpr int kFacePx = 72;
 constexpr int kFaceZoomLabel = 205; // 205/256 = 80%
@@ -37,19 +38,6 @@ constexpr uint32_t kColorUsbOk = 0x2E7D32;
 constexpr uint32_t kColorUsbMissing = 0xB45309;
 constexpr uint32_t kColorReloadBg = 0x2A2A2E;
 constexpr uint32_t kColorReloadText = 0xE8E8E8;
-
-// Pressed keycap: the cap color darkened, so the press reads even on
-// the black caps (which go darker still).
-uint32_t darken(uint32_t color)
-{
-    uint8_t r = (uint8_t)((color >> 16) & 0xFF);
-    uint8_t g = (uint8_t)((color >> 8) & 0xFF);
-    uint8_t b = (uint8_t)(color & 0xFF);
-    r = (uint8_t)((r * 11) / 16);
-    g = (uint8_t)((g * 11) / 16);
-    b = (uint8_t)((b * 11) / 16);
-    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
-}
 
 lv_obj_t *create_plain(lv_obj_t *parent)
 {
@@ -106,7 +94,11 @@ bool MacroPadUi::create(lv_obj_t *parent, KeyCallback key_cb, ReloadCallback rel
         lv_obj_set_style_shadow_opa(view.btn, LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_set_style_border_width(view.btn, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_all(view.btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(view.btn, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+        // No background of its own: the key is just the photo. (The
+        // pressed state stays transparent too — press feedback comes
+        // from dimming the photo, see keyEventCallback.)
+        lv_obj_set_style_bg_opa(view.btn, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(view.btn, LV_OPA_TRANSP, LV_STATE_PRESSED);
         lv_obj_set_user_data(view.btn, this);
         lv_obj_add_event_cb(view.btn, keyEventCallback, LV_EVENT_PRESSED,
                             reinterpret_cast<void *>((intptr_t)i));
@@ -178,9 +170,6 @@ void MacroPadUi::setConfig(const MacroPadConfig &config)
         if (!view.btn) {
             continue;
         }
-        lv_obj_set_style_bg_color(view.btn, lv_color_hex(key.color), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(view.btn, lv_color_hex(darken(key.color)),
-                                  LV_STATE_PRESSED);
         const lv_image_dsc_t *dsc = macropad_icon_dsc(key.icon);
         if (dsc) {
             lv_img_set_src(view.img, dsc);
@@ -234,8 +223,8 @@ void MacroPadUi::keyEventCallback(lv_event_t *e)
     if (!ui || index < 0 || index >= MacroPadConfig::kKeyCount) {
         return;
     }
-    // Press feedback: the photo fills the button, so the darkened button
-    // background barely shows — dim the photo itself while held.
+    // Press feedback: the button has no background, so dim the photo
+    // itself while held.
     KeyView &view = ui->_keys[index];
     if (view.img) {
         lv_obj_set_style_img_opa(view.img, view.assigned ? LV_OPA_70 : LV_OPA_20,

@@ -5,11 +5,16 @@ C arrays (one file, assets/macropad_icons.c).
 The key faces are the user's own keycap photos (one per key, white
 background, in tools/keycap_photos/). Each photo is cropped to the
 keycap — the caps are not all the same size in the photos — squared,
-resized to 72x72, and the white background in the corners is made
-transparent, so the button's flat keycap color shows through at the
-corners and the top/bottom bands. The UI shows the photo as the whole
-key face; the flat color behind it comes from the config, so keys can
-still be recolored (it only shows at the edges).
+resized to 72x72, and the white background around the cap is made
+transparent, so the key is just the photo on the dark screen: the
+buttons carry no background color of their own.
+
+Order matters: the transparency is cut BEFORE the squaring. Padding
+first traps a ring of the photo's white background between the padding
+and the cap, which showed as a white border around every key (first
+photo pass, 2026-11-22). And the downscale runs in premultiplied
+(RGBa) space, so the semi-transparent edge pixels blend the cap color
+with transparent instead of with white.
 
 The photos in tools/keycap_photos/ are the user's and are NOT committed
 to the public repo — only the generated macropad_icons.c is committed.
@@ -36,7 +41,7 @@ COMPONENT = os.path.dirname(HERE)
 ASSETS = os.path.join(COMPONENT, "assets")
 PHOTOS = os.path.join(HERE, "keycap_photos")
 
-FACE = 72                  # final key-face size (px); the button is 72x80
+FACE = 72                  # final key-face size (px); the button is 72x72
 APP_ICON = 112             # launcher icon size (px)
 SS = 4                     # supersampling factor for the drawn launcher icon
 
@@ -68,13 +73,6 @@ ICONS = [
     "ufo", "bowl", "smiley", "play_pause", "mute",
     "husky", "df", "fox", "globe", "chat",
     "paw", "check", "mic_mute", "mail", "folder",
-]
-
-# Keycap background colors from the photo (also the compiled-in defaults).
-CAP_COLORS = [
-    "#B85C38", "#B5AA9C", "#1C1C1C", "#1C1C1C", "#1C1C1C",
-    "#1C1C1C", "#9DB4B8", "#A97B50", "#1C1C1C", "#1C1C1C",
-    "#C2A276", "#8A9A5B", "#1C1C1C", "#1C1C1C", "#1C1C1C",
 ]
 
 
@@ -121,7 +119,13 @@ def transparent_corners(img):
 
 def load_key_face(name):
     """Crop one keycap photo to the key face: a FACE x FACE RGBA image
-    with transparent corners following the keycap's rounded outline."""
+    with the white background around the cap transparent.
+
+    Transparency is cut at full resolution, BEFORE the squaring: the
+    flood fill needs the white margin around the cap to reach the
+    corners. The squaring then pads with transparent pixels (never a
+    color), and the downscale runs in premultiplied space so the edge
+    blends cleanly."""
     path = os.path.join(PHOTOS, PHOTOS_MAP[name])
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -134,24 +138,25 @@ def load_key_face(name):
     aspect = w / h
     print(f"  {name}: {img.size} -> bbox {w}x{h} "
           f"(aspect {aspect:.3f})")
+    rgba = transparent_corners(crop)
     if 0.98 <= aspect <= 1.02:
         # Near-square already: a tiny stretch is invisible.
-        square = crop.resize((FACE, FACE), Image.LANCZOS)
-        return transparent_corners(square)
-    # Off-square: pad the short side with the cap's edge color instead
-    # of stretching the art.
-    side = max(w, h)
-    border = []
-    border += [crop.getpixel((x, 0)) for x in range(0, w, 10)]
-    border += [crop.getpixel((x, h - 1)) for x in range(0, w, 10)]
-    border += [crop.getpixel((0, y)) for y in range(0, h, 10)]
-    border += [crop.getpixel((w - 1, y)) for y in range(0, h, 10)]
-    border.sort()
-    edge = border[len(border) // 2]
-    padded = Image.new("RGB", (side, side), edge)
-    padded.paste(crop, ((side - w) // 2, (side - h) // 2))
-    square = padded.resize((FACE, FACE), Image.LANCZOS)
-    return transparent_corners(square)
+        square = rgba
+    else:
+        # Off-square: pad the short side with transparency instead of
+        # stretching the art.
+        side = max(w, h)
+        padded = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        padded.paste(rgba, ((side - w) // 2, (side - h) // 2), rgba)
+        square = padded
+    # Premultiplied downscale: the semi-transparent edge pixels blend
+    # the cap color with transparent, not with white.
+    face = square.convert("RGBa").resize((FACE, FACE), Image.LANCZOS).convert("RGBA")
+    # Soften the alpha edge at display size (the full-res feather is
+    # sub-pixel after the downscale).
+    alpha = face.getchannel("A").filter(ImageFilter.GaussianBlur(0.5))
+    face.putalpha(alpha)
+    return face
 
 
 def finish(img, size):
@@ -229,9 +234,9 @@ def main():
     parts.append(" * (tools/keycap_photos/, not committed — see the")
     parts.append(" * script header). The photos are cropped to the")
     parts.append(" * keycap, squared and resized to 72x72, with the")
-    parts.append(" * white corners transparent so the button's flat")
-    parts.append(" * keycap color shows at the edges. The launcher")
-    parts.append(" * icon is drawn, not a photo.")
+    parts.append(" * white background around the cap transparent —")
+    parts.append(" * the key is just the photo on the dark screen.")
+    parts.append(" * The launcher icon is drawn, not a photo.")
     parts.append(" * Regenerate with: python3 tools/gen_icons.py")
     parts.append(" */")
     parts.append("")
@@ -273,8 +278,10 @@ def main():
     print(f"wrote {out_path} ({os.path.getsize(out_path)} bytes)")
 
     # Preview: a mockup of the 466x466 round screen as the app will
-    # look — same geometry as MacroPadUi (grid 37,96; keys 72x80, gap
-    # 8; title 22; USB 54; footer 360; reload 394).
+    # look — same geometry as MacroPadUi (grid 37,99; keys 72x72, gap
+    # 8; title 22; USB 54; footer 360; reload 394). The buttons carry
+    # no background color: the keys are just the photos on the dark
+    # screen.
     screen = Image.new("RGBA", (466, 466), (14, 14, 16, 255))
     d = ImageDraw.Draw(screen)
     font_title = ImageFont.truetype(FONT_BOLD, 20)
@@ -287,11 +294,8 @@ def main():
     for i, name in enumerate(ICONS):
         row, col = divmod(i, 5)
         x0 = 37 + col * (72 + 8)
-        y0 = 96 + row * (80 + 8)
-        d.rounded_rectangle([x0, y0, x0 + 72, y0 + 80], radius=12,
-                            fill=CAP_COLORS[i])
-        # The face is 72x72 in a 72x80 button: 4px bands top/bottom.
-        screen.alpha_composite(rendered[name], (x0, y0 + 4))
+        y0 = 99 + row * (72 + 8)
+        screen.alpha_composite(rendered[name], (x0, y0))
     d.rounded_rectangle([153, 394, 313, 430], radius=18, fill=(42, 42, 46, 255))
     d.text((233, 402), "Reload config", font=font_small,
            fill=(232, 232, 232, 255), anchor="ma")

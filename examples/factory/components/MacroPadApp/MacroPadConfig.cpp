@@ -22,33 +22,32 @@ namespace {
 constexpr const char *TAG = "macropad_config";
 constexpr size_t kMaxFileBytes = 16 * 1024;
 
-// The photo layout, row-major: icon name, keycap color, default action.
-// Only the media keys are wired by default; the rest are unassigned
-// until the user maps them in the config file. Mic mute stays
-// unassigned on purpose: macOS answers no HID usage for it (see
-// MacroPadHid.hpp), so a default there would be a dead key.
+// The photo layout, row-major: icon name, default action. Only the
+// media keys are wired by default; the rest are unassigned until the
+// user maps them in the config file. Mic mute stays unassigned on
+// purpose: macOS answers no HID usage for it (see MacroPadHid.hpp),
+// so a default there would be a dead key.
 struct DefaultKey {
     const char *icon;
-    uint32_t color;
     uint16_t consumer_usage;  // 0 = unassigned
 };
 
 constexpr DefaultKey kDefaults[MacroPadConfig::kKeyCount] = {
-    {"ufo",        0xB85C38, 0},        // row 1: orange saucer
-    {"bowl",       0xB5AA9C, 0},        // beige dog bowl + bone
-    {"smiley",     0x1C1C1C, 0},        // black smiley face
-    {"play_pause", 0x1C1C1C, 0xCD},     // black play/pause
-    {"mute",       0x1C1C1C, 0xE2},     // black mute speaker
-    {"husky",      0x1C1C1C, 0},        // row 2: black/white husky face
-    {"df",         0x9DB4B8, 0},        // light blue-grey DF chevron
-    {"fox",        0xA97B50, 0},        // brown fox with glasses
-    {"globe",      0x1C1C1C, 0},        // black globe
-    {"chat",       0x1C1C1C, 0},        // black chat bubble
-    {"paw",        0xC2A276, 0},        // row 3: tan paw print
-    {"check",      0x8A9A5B, 0},        // green checkmark
-    {"mic_mute",   0x1C1C1C, 0},        // black mic muted (unassigned: no HID path)
-    {"mail",       0x1C1C1C, 0},        // black envelope
-    {"folder",     0x1C1C1C, 0},        // black folder
+    {"ufo",        0},        // row 1: orange saucer
+    {"bowl",       0},        // beige dog bowl + bone
+    {"smiley",     0},        // black smiley face
+    {"play_pause", 0xCD},     // black play/pause
+    {"mute",       0xE2},     // black mute speaker
+    {"husky",      0},        // row 2: black/white husky face
+    {"df",         0},        // light blue-grey DF chevron
+    {"fox",        0},        // brown fox with glasses
+    {"globe",      0},        // black globe
+    {"chat",       0},        // black chat bubble
+    {"paw",        0},        // row 3: tan paw print
+    {"check",      0},        // green checkmark
+    {"mic_mute",   0},        // black mic muted (unassigned: no HID path)
+    {"mail",       0},        // black envelope
+    {"folder",     0},        // black folder
 };
 
 void copy_string(char *dst, size_t dst_size, const char *src)
@@ -57,19 +56,6 @@ void copy_string(char *dst, size_t dst_size, const char *src)
         return;
     }
     snprintf(dst, dst_size, "%s", src ? src : "");
-}
-
-bool parse_hex_color(const char *str, uint32_t &color)
-{
-    if (!str || str[0] != '#' || strlen(str) != 7) {
-        return false;
-    }
-    unsigned int value = 0;
-    if (sscanf(str + 1, "%06x", &value) != 1) {
-        return false;
-    }
-    color = value;
-    return true;
 }
 
 // Parses {"modifiers": [...], "key": "..."} / {"keys": [...]} into the
@@ -222,7 +208,6 @@ void macropad_config_defaults(MacroPadConfig &config)
     config = MacroPadConfig{};
     for (int i = 0; i < MacroPadConfig::kKeyCount; i++) {
         copy_string(config.keys[i].icon, sizeof(config.keys[i].icon), kDefaults[i].icon);
-        config.keys[i].color = kDefaults[i].color;
         if (kDefaults[i].consumer_usage != 0) {
             config.keys[i].action.type = MacroPadAction::Type::Consumer;
             config.keys[i].action.consumer_usage = kDefaults[i].consumer_usage;
@@ -300,13 +285,6 @@ bool macropad_config_load(MacroPadConfig &config)
             const cJSON *icon = cJSON_GetObjectItemCaseSensitive(entry, "icon");
             if (cJSON_IsString(icon)) {
                 copy_string(key.icon, sizeof(key.icon), icon->valuestring);
-            }
-            const cJSON *color = cJSON_GetObjectItemCaseSensitive(entry, "color");
-            if (cJSON_IsString(color)) {
-                uint32_t parsed = 0;
-                if (parse_hex_color(color->valuestring, parsed)) {
-                    key.color = parsed;
-                }
             }
             const cJSON *label = cJSON_GetObjectItemCaseSensitive(entry, "label");
             if (cJSON_IsString(label)) {

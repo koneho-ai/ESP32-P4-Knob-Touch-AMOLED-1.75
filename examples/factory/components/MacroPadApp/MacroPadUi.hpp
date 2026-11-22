@@ -38,10 +38,10 @@ public:
 
     // Grid geometry, for the README and tests.
     static constexpr int kKeyW = 72;
-    static constexpr int kKeyH = 80;
+    static constexpr int kKeyH = 72; // square: the face fills the button
     static constexpr int kKeyGap = 8;
     static constexpr int kGridX = 37;   // (466 - (5*72 + 4*8)) / 2
-    static constexpr int kGridY = 96;
+    static constexpr int kGridY = 99;   // grid centered between the USB row and the footer
 
 private:
     struct KeyView {

@@ -53,7 +53,6 @@ struct MacroPadKey {
     static constexpr int kMaxLabel = 16;
 
     char icon[kMaxIcon] = {};   // name from the built-in icon set, "" = no icon
-    uint32_t color = 0;         // keycap background, 0xRRGGBB
     char label[kMaxLabel] = {}; // optional short text under the icon
     MacroPadAction action;
 };
@@ -70,8 +69,8 @@ struct MacroPadConfig {
     char error[kMaxError] = {}; // parse error, "" when the file was fine or absent
 };
 
-// The photo layout: icons and keycap colors as photographed, media keys
-// wired (play/pause, mute), everything else unassigned, knob on volume.
+// The photo layout: the key faces as photographed, media keys wired
+// (play/pause, mute), everything else unassigned, knob on volume.
 void macropad_config_defaults(MacroPadConfig &config);
 
 // Reads kPath on top of the defaults. Returns true when a file was read
