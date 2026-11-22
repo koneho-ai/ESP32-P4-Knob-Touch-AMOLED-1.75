@@ -3,8 +3,8 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Built-in key icons (drawn by tools/gen_icons.py from the user's
- * macropad photo) and the launcher icon.
+ * Built-in key faces (photos of the user's keycaps, built by
+ * tools/gen_icons.py) and the launcher icon.
  */
 
 #pragma once

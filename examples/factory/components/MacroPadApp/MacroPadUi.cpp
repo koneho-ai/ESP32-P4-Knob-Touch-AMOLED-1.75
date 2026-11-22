@@ -24,7 +24,11 @@ constexpr int kFooterY = 360;
 constexpr int kReloadY = 394;
 constexpr int kReloadW = 160;
 constexpr int kReloadH = 36;
-constexpr int kIconPx = 56;
+// The key face is the keycap photo, 72x72 in a 72x80 button (4px flat
+// color bands top and bottom). With a label the image zooms to 80% so
+// the text fits under it.
+constexpr int kFacePx = 72;
+constexpr int kFaceZoomLabel = 205; // 205/256 = 80%
 
 constexpr uint32_t kColorBackground = 0x0E0E10;
 constexpr uint32_t kColorTitle = 0xE8E8E8;
@@ -106,9 +110,14 @@ bool MacroPadUi::create(lv_obj_t *parent, KeyCallback key_cb, ReloadCallback rel
         lv_obj_set_user_data(view.btn, this);
         lv_obj_add_event_cb(view.btn, keyEventCallback, LV_EVENT_PRESSED,
                             reinterpret_cast<void *>((intptr_t)i));
+        // Release restores the image opacity (see keyEventCallback).
+        lv_obj_add_event_cb(view.btn, keyReleaseCallback, LV_EVENT_RELEASED,
+                            reinterpret_cast<void *>((intptr_t)i));
+        lv_obj_add_event_cb(view.btn, keyReleaseCallback, LV_EVENT_PRESS_LOST,
+                            reinterpret_cast<void *>((intptr_t)i));
 
         view.img = lv_img_create(view.btn);
-        lv_obj_set_size(view.img, kIconPx, kIconPx);
+        lv_obj_set_size(view.img, kFacePx, kFacePx);
         lv_obj_center(view.img);
 
         view.label = lv_label_create(view.btn);
@@ -180,15 +189,18 @@ void MacroPadUi::setConfig(const MacroPadConfig &config)
             lv_obj_add_flag(view.img, LV_OBJ_FLAG_HIDDEN);
         }
         bool assigned = key.action.type != MacroPadAction::Type::None;
+        view.assigned = assigned;
         lv_obj_set_style_img_opa(view.img, assigned ? LV_OPA_COVER : LV_OPA_40, LV_PART_MAIN);
         if (key.label[0] != '\0') {
             lv_label_set_text(view.label, key.label);
             lv_obj_clear_flag(view.label, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_style_opa(view.label, assigned ? LV_OPA_COVER : LV_OPA_50, LV_PART_MAIN);
-            // Icon up a little so the label fits under it.
+            // Icon up a little and zoomed out so the label fits under it.
+            lv_img_set_zoom(view.img, kFaceZoomLabel);
             lv_obj_align(view.img, LV_ALIGN_CENTER, 0, -7);
         } else {
             lv_obj_add_flag(view.label, LV_OBJ_FLAG_HIDDEN);
+            lv_img_set_zoom(view.img, LV_ZOOM_NONE);
             lv_obj_align(view.img, LV_ALIGN_CENTER, 0, 0);
         }
     }
@@ -219,8 +231,33 @@ void MacroPadUi::keyEventCallback(lv_event_t *e)
     intptr_t index = reinterpret_cast<intptr_t>(lv_event_get_user_data(e));
     lv_obj_t *btn = lv_event_get_current_target_obj(e);
     MacroPadUi *ui = static_cast<MacroPadUi *>(lv_obj_get_user_data(btn));
-    if (ui && ui->_key_cb && index >= 0 && index < MacroPadConfig::kKeyCount) {
+    if (!ui || index < 0 || index >= MacroPadConfig::kKeyCount) {
+        return;
+    }
+    // Press feedback: the photo fills the button, so the darkened button
+    // background barely shows — dim the photo itself while held.
+    KeyView &view = ui->_keys[index];
+    if (view.img) {
+        lv_obj_set_style_img_opa(view.img, view.assigned ? LV_OPA_70 : LV_OPA_20,
+                                 LV_PART_MAIN);
+    }
+    if (ui->_key_cb) {
         ui->_key_cb((int)index, ui->_ctx);
+    }
+}
+
+void MacroPadUi::keyReleaseCallback(lv_event_t *e)
+{
+    intptr_t index = reinterpret_cast<intptr_t>(lv_event_get_user_data(e));
+    lv_obj_t *btn = lv_event_get_current_target_obj(e);
+    MacroPadUi *ui = static_cast<MacroPadUi *>(lv_obj_get_user_data(btn));
+    if (!ui || index < 0 || index >= MacroPadConfig::kKeyCount) {
+        return;
+    }
+    KeyView &view = ui->_keys[index];
+    if (view.img) {
+        lv_obj_set_style_img_opa(view.img, view.assigned ? LV_OPA_COVER : LV_OPA_40,
+                                 LV_PART_MAIN);
     }
 }
 

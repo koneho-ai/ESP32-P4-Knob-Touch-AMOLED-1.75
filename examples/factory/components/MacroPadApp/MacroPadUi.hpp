@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Macropad UI: a 5x3 grid of touch keys on the 466x466 round display,
- * styled like the user's macropad photo (keycap colors + redrawn
- * icons), a USB connection indicator, a footer status line and a
+ * styled like the user's macropad (the key faces are photos of their
+ * keycaps), a USB connection indicator, a footer status line and a
  * "Reload config" button. Runs on the LVGL task only.
  */
 
@@ -48,9 +48,11 @@ private:
         lv_obj_t *btn = nullptr;
         lv_obj_t *img = nullptr;
         lv_obj_t *label = nullptr;
+        bool assigned = false; // drives the pressed/released image opacity
     };
 
     static void keyEventCallback(lv_event_t *e);
+    static void keyReleaseCallback(lv_event_t *e);
     static void reloadEventCallback(lv_event_t *e);
 
     lv_obj_t *_root = nullptr;

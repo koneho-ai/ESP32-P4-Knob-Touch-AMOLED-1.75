@@ -1,8 +1,8 @@
 # MacroPad app
 
 A touchscreen macropad for the P4 knob board: 15 touch keys in a 5×3
-grid, styled like the user's macropad photo (keycap colors + redrawn
-icons), sending real keystrokes to a computer over USB HID. The
+grid, styled like the user's macropad (the key faces are photos of
+their keycaps), sending real keystrokes to a computer over USB HID. The
 physical knob sends volume up/down.
 
 > **UNTESTED ON HARDWARE** — no board exists yet. Compile verification
@@ -187,8 +187,9 @@ treats those as brightness).
 - `MacroPadHid.{hpp,cpp}` — key/modifier/consumer name tables and
   the US-layout character map.
 - `MacroPadIcons.{hpp,cpp}` + `assets/macropad_icons.c` — the 15 key
-  icons + launcher icon, drawn by `tools/gen_icons.py` (PIL) from
-  the photo; regenerate with `python3 tools/gen_icons.py`.
+  faces + launcher icon, built by `tools/gen_icons.py` (PIL) from the
+  user's keycap photos in `tools/keycap_photos/` (not committed — see
+  the script header); regenerate with `python3 tools/gen_icons.py`.
 - USB HID itself lives in `app_services` (`usb/usb_descriptors.c`,
   `usb_service.c`): one composite device — HID keyboard + HID
   consumer + MSC drive — so the macropad and the SD drive can run
